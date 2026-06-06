@@ -347,9 +347,21 @@ Les points encore en cours ou à améliorer peuvent inclure :
 
 ---
 
-## Licence
+## Licence et esprit du projet
 
-Licence à définir.
+Ce projet est publié sous licence **GNU GPL v3 ou ultérieure**.
+
+Vous êtes libres de l’utiliser, de l’étudier, de le modifier et de le redistribuer, à condition que les versions redistribuées restent sous la même licence et que le code source reste disponible.
+
+L’objectif du projet est aussi communautaire : si vous améliorez l’émulateur, corrigez un bug ou ajoutez une fonctionnalité, merci de proposer vos changements au dépôt original afin que tout le monde puisse en profiter.
+
+Identifiant SPDX recommandé :
+
+```text
+GPL-3.0-or-later
+```
+
+Pour appliquer correctement cette licence au dépôt, ajoutez un fichier `LICENSE` contenant le texte complet de la GNU GPL v3, puis indiquez la licence dans les fichiers sources principaux.
 
 ---
 
