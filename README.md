@@ -21,6 +21,7 @@ L’objectif n’est pas seulement d’afficher un prompt BASIC, mais de retrouv
 - sauvegarde et chargement cassette avec `CSAVE` et `CLOAD` ;
 - auto-chargement de fichiers cassette au lancement de l’émulateur ;
 - injection automatique de listings BASIC depuis un fichier texte ;
+- manipulation et conversion de fichiers cassette avec `x07cas` ;
 - comportement mémoire lors de l’arrêt et du redémarrage ;
 - émulation du processeur compatible Z80 / NSC800 ;
 - et, si possible, ce petit charme imprévisible des machines de l’époque.
@@ -85,6 +86,7 @@ Les éléments suivants sont partiellement ou totalement pris en charge :
 - auto-`CLOAD` d’un fichier `.cas` passé en argument au lancement ;
 - injection automatique d’un listing BASIC texte avec l’option `.X07` ;
 - sauvegarde de programmes avec `CSAVE` ;
+- utilitaire `x07cas` pour manipuler et convertir les fichiers cassette ;
 - génération sonore pendant les opérations cassette ;
 - émulation des bips système et de la commande `BEEP`.
 
@@ -137,10 +139,16 @@ make clean
 make
 ```
 
-Le binaire généré dépend du `Makefile`, mais il peut par exemple s’appeler :
+Le binaire principal de l’émulateur est :
 
 ```bash
 ./x07
+```
+
+Selon la version du projet, l’utilitaire cassette peut aussi être généré :
+
+```bash
+./x07cas
 ```
 
 ---
@@ -294,6 +302,22 @@ test.cas
 
 Puis charge le programme dans la mémoire BASIC.
 
+### Utilitaire `x07cas`
+
+Le projet inclut également l’utilitaire **`x07cas`**.
+
+Cet outil permet de travailler directement avec les fichiers cassette utilisés par l’émulateur, sans forcément passer par l’interface BASIC du Canon X-07. Il accompagne les commandes `CSAVE` et `CLOAD` pour préparer, convertir ou contrôler les fichiers liés à la cassette.
+
+Exemples d’utilisation possibles selon les options disponibles dans la version compilée :
+
+```bash
+./x07cas programme.cas
+./x07cas source.wav destination.cas
+./x07cas source.cas destination.wav
+```
+
+L’objectif est de faciliter les échanges entre le monde moderne — fichiers sur disque, fichiers texte, fichiers audio — et le comportement cassette historique du Canon X-07.
+
 ---
 
 ## Touches clavier
@@ -320,6 +344,7 @@ Les principaux fichiers du projet sont :
 | Fichier | Rôle |
 |---|---|
 | `x07.c` | boucle principale de l’émulateur |
+| `x07cas` / `x07cas.c` | utilitaire de manipulation et conversion cassette |
 | `Z80.c` | cœur d’émulation Z80 / NSC800 |
 | `T6834.c` | émulation du contrôleur clavier / affichage / E/S |
 | `video.c` | gestion de l’affichage SDL |
@@ -347,21 +372,13 @@ Les points encore en cours ou à améliorer peuvent inclure :
 
 ---
 
-## Licence et esprit du projet
+## Licence
 
 Ce projet est publié sous licence **GNU GPL v3 ou ultérieure**.
 
 Vous êtes libres de l’utiliser, de l’étudier, de le modifier et de le redistribuer, à condition que les versions redistribuées restent sous la même licence et que le code source reste disponible.
 
 L’objectif du projet est aussi communautaire : si vous améliorez l’émulateur, corrigez un bug ou ajoutez une fonctionnalité, merci de proposer vos changements au dépôt original afin que tout le monde puisse en profiter.
-
-Identifiant SPDX recommandé :
-
-```text
-GPL-3.0-or-later
-```
-
-Pour appliquer correctement cette licence au dépôt, ajoutez un fichier `LICENSE` contenant le texte complet de la GNU GPL v3, puis indiquez la licence dans les fichiers sources principaux.
 
 ---
 
