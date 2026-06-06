@@ -1,0 +1,4 @@
+10 CLS
+20 locate 0,0:PRINT "F6=";STRIG(1);" SPACE=";STRIG(0);
+30 GOTO 20
+RUN

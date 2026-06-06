@@ -1,0 +1,14 @@
+*.o
+*.a
+*.so
+*.exe
+*.out
+*.bin
+*.rom
+*.cas
+*.wav
+build/
+Debug/
+Release/
+.vscode/
+*.log
