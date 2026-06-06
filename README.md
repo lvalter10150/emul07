@@ -8,13 +8,13 @@ Bienvenue dans le projet **Émulateur Canon X-07**.
 
 Le **Canon X-07**, c’est une petite machine des années 1980 qui tient presque dans la main, mais qui cache un vrai ordinateur programmable en BASIC.
 
-Un écran LCD de 20 colonnes par 4 lignes, un clavier intégré, une interface cassette, du son, des ports d’extension, un BASIC Microsoft/Canon en ROM… bref, tout ce qu’il faut pour replonger dans l’époque où sauvegarder un programme faisait du bruit sur une cassette audio.
+Un écran LCD de 20 colonnes par 4 lignes, un clavier intégré, une interface cassette, du son, des ports d’extension, un BASIC Microsoft/Canon intégré… bref, tout ce qu’il faut pour replonger dans l’époque où sauvegarder un programme faisait du bruit sur une cassette audio.
 
 Ce projet a pour but de faire revivre cette machine sous forme d’émulateur.
 
 L’objectif n’est pas seulement d’afficher un prompt BASIC, mais de retrouver petit à petit le comportement du vrai Canon X-07 :
 
-- démarrage de la ROM ;
+- démarrage du BASIC Canon X-07 ;
 - clavier et touches spéciales ;
 - affichage LCD ;
 - sons système et `BEEP` ;
@@ -58,7 +58,7 @@ Il existe grâce au travail de passionnés qui ont ouvert la voie avant moi. San
 
 Un immense merci à **J. BRIGAUD**, dont les sources originales autour de l’émulation du **Canon X-07** ont servi de base précieuse pour comprendre la machine, son organisation interne et ses composants spécifiques.
 
-Un grand merci également à **Marat Fayzullin**, auteur du cœur **Z80 portable**, utilisé comme base pour l’émulation du processeur compatible Z80 / NSC800. Son travail fournit une fondation solide pour exécuter le code machine de la ROM du Canon X-07.
+Un grand merci également à **Marat Fayzullin**, auteur du cœur **Z80 portable**, utilisé comme base pour l’émulation du processeur compatible Z80 / NSC800. Son travail fournit une fondation solide pour exécuter le code machine du Canon X-07.
 
 Merci donc à :
 
@@ -74,7 +74,7 @@ Ce dépôt est une continuation de ce travail, dans un esprit de préservation, 
 
 Les éléments suivants sont partiellement ou totalement pris en charge :
 
-- démarrage de la ROM Canon X-07 ;
+- démarrage du BASIC Canon X-07 ;
 - exécution du BASIC ;
 - affichage texte via SDL2 ;
 - gestion du clavier PC vers clavier Canon X-07 ;
@@ -155,7 +155,7 @@ Lancer l’émulateur :
 ./x07
 ```
 
-Au démarrage, l’émulateur lance la ROM du Canon X-07 et affiche l’écran BASIC.
+Au démarrage, l’émulateur affiche l’écran BASIC du Canon X-07.
 
 Exemple attendu :
 
@@ -294,42 +294,6 @@ test.cas
 
 Puis charge le programme dans la mémoire BASIC.
 
-### Charger directement au lancement
-
-Pour aller plus vite, le fichier cassette peut être passé directement au lancement de l’émulateur :
-
-```bash
-./x07 TEST.cas
-```
-
-L’émulateur prépare alors automatiquement le chargement par `CLOAD`.
-
-### Vérifier le programme chargé
-
-```basic
-LIST
-```
-
-Puis lancer :
-
-```basic
-RUN
-```
-
----
-
-## Import de listings BASIC
-
-Pour développer ou tester plus rapidement, il est possible de préparer un programme BASIC dans un simple fichier texte, puis de l’injecter dans l’émulateur.
-
-Exemple :
-
-```bash
-./x07 .X07 programme.txt
-```
-
-Le contenu du fichier est envoyé au clavier virtuel du Canon X-07. C’est très pratique pour éviter de retaper un long programme à chaque essai.
-
 ---
 
 ## Touches clavier
@@ -366,58 +330,6 @@ Les principaux fichiers du projet sont :
 
 ---
 
-## ROM Canon X-07
-
-L’émulateur nécessite une image ROM du Canon X-07 pour fonctionner.
-
-Pour des raisons de droits, la ROM originale n’est pas fournie dans ce dépôt.
-
-Placez votre fichier ROM dans le répertoire attendu par le programme, selon la configuration du projet.
-
-Exemple :
-
-```text
-roms/x07.rom
-```
-
-ou adaptez le chemin dans le code source si nécessaire.
-
----
-
-## Fichiers à ne pas publier
-
-Il est recommandé de ne pas publier dans GitHub :
-
-- les fichiers ROM ;
-- les fichiers cassette personnels ;
-- les fichiers WAV générés ;
-- les binaires compilés ;
-- les fichiers temporaires ;
-- les fichiers de debug.
-
-Exemple de `.gitignore` :
-
-```gitignore
-*.o
-*.a
-*.so
-*.exe
-*.out
-*.bin
-*.rom
-*.cas
-*.wav
-*.log
-
-build/
-Debug/
-Release/
-.vscode/
-roms/
-```
-
----
-
 ## État du projet
 
 Ce projet est expérimental.
@@ -438,8 +350,6 @@ Les points encore en cours ou à améliorer peuvent inclure :
 ## Licence
 
 Licence à définir.
-
-Attention : le code source de l’émulateur peut être publié sous une licence libre, mais les ROMs originales Canon ne doivent pas être redistribuées sans autorisation.
 
 ---
 
