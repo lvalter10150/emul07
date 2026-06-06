@@ -308,12 +308,75 @@ Le projet inclut également l’utilitaire **`x07cas`**.
 
 Cet outil permet de travailler directement avec les fichiers cassette utilisés par l’émulateur, sans forcément passer par l’interface BASIC du Canon X-07. Il accompagne les commandes `CSAVE` et `CLOAD` pour préparer, convertir ou contrôler les fichiers liés à la cassette.
 
-Exemples d’utilisation possibles selon les options disponibles dans la version compilée :
+Il permet notamment de convertir un fichier audio WAV en fichier cassette `.cas`, de générer un WAV à partir d’un fichier `.cas`, ou encore d’extraire les bits détectés depuis un WAV pour faciliter le debug.
+
+#### Syntaxe
+
+```text
+./x07cas --wav2cas [options] input.wav output.cas
+./x07cas --cas2wav [options] input.cas output.wav
+./x07cas --bits   [options] input.wav output_bits.txt
+```
+
+#### Conversion WAV vers CAS
+
+Convertit un enregistrement audio cassette en fichier `.cas` utilisable par l’émulateur.
 
 ```bash
-./x07cas programme.cas
-./x07cas source.wav destination.cas
-./x07cas source.cas destination.wav
+./x07cas --wav2cas input.wav output.cas
+```
+
+Option disponible :
+
+```text
+--threshold R       seuil haut, défaut 0.666666
+```
+
+Exemple avec un seuil personnalisé :
+
+```bash
+./x07cas --wav2cas --threshold 0.60 sauvegarde.wav programme.cas
+```
+
+#### Conversion CAS vers WAV
+
+Génère un fichier audio WAV à partir d’un fichier cassette `.cas`.
+
+```bash
+./x07cas --cas2wav input.cas output.wav
+```
+
+Options disponibles :
+
+```text
+--name NOM          nom cassette X-07, 6 caractères max, défaut CAS
+--rate HZ           fréquence WAV, défaut 44100
+```
+
+Exemple :
+
+```bash
+./x07cas --cas2wav --name TEST --rate 44100 programme.cas programme.wav
+```
+
+#### Extraction des bits depuis un WAV
+
+Le mode `--bits` permet de lire un fichier WAV et d’écrire les bits détectés dans un fichier texte. C’est pratique pour analyser un enregistrement, contrôler le décodage ou comprendre pourquoi une cassette ne se charge pas correctement.
+
+```bash
+./x07cas --bits input.wav output_bits.txt
+```
+
+#### Option commune
+
+```text
+--quiet             moins de messages
+```
+
+Exemple :
+
+```bash
+./x07cas --wav2cas --quiet input.wav output.cas
 ```
 
 L’objectif est de faciliter les échanges entre le monde moderne — fichiers sur disque, fichiers texte, fichiers audio — et le comportement cassette historique du Canon X-07.
