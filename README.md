@@ -19,6 +19,8 @@ L’objectif n’est pas seulement d’afficher un prompt BASIC, mais de retrouv
 - affichage LCD ;
 - sons système et `BEEP` ;
 - sauvegarde et chargement cassette avec `CSAVE` et `CLOAD` ;
+- auto-chargement de fichiers cassette au lancement de l’émulateur ;
+- injection automatique de listings BASIC depuis un fichier texte ;
 - comportement mémoire lors de l’arrêt et du redémarrage ;
 - émulation du processeur compatible Z80 / NSC800 ;
 - et, si possible, ce petit charme imprévisible des machines de l’époque.
@@ -80,6 +82,8 @@ Les éléments suivants sont partiellement ou totalement pris en charge :
 - sauvegarde temporaire de la RAM lors de l’extinction ;
 - support des fichiers cassette `.cas` ;
 - chargement de programmes avec `CLOAD` ;
+- auto-`CLOAD` d’un fichier `.cas` passé en argument au lancement ;
+- injection automatique d’un listing BASIC texte avec l’option `.X07` ;
 - sauvegarde de programmes avec `CSAVE` ;
 - génération sonore pendant les opérations cassette ;
 - émulation des bips système et de la commande `BEEP`.
@@ -139,26 +143,16 @@ Le binaire généré dépend du `Makefile`, mais il peut par exemple s’appeler
 ./x07
 ```
 
-ou :
-
-```bash
-./canonx07
-```
-
 ---
 
 ## Utilisation
+
+### Lancement simple
 
 Lancer l’émulateur :
 
 ```bash
 ./x07
-```
-
-ou selon le nom du binaire :
-
-```bash
-./canonx07
 ```
 
 Au démarrage, l’émulateur lance la ROM du Canon X-07 et affiche l’écran BASIC.
@@ -170,6 +164,60 @@ Copyright (C) 1983 by
 Microsoft & Canon
 xxxx Bytes Free
 >
+```
+
+### Auto-CLOAD d’un fichier cassette
+
+L’émulateur peut recevoir un fichier cassette `.cas` en argument :
+
+```bash
+./x07 toto.cas
+```
+
+Dans ce mode, l’émulateur démarre normalement, puis injecte automatiquement la commande BASIC de chargement cassette correspondant au fichier fourni.
+
+Cela permet de lancer rapidement un programme cassette sans retaper manuellement :
+
+```basic
+CLOAD "TOTO"
+```
+
+Une fois le chargement terminé, il suffit généralement de vérifier le programme avec :
+
+```basic
+LIST
+```
+
+puis de l’exécuter avec :
+
+```basic
+RUN
+```
+
+### Injection d’un listing BASIC texte
+
+Il est aussi possible d’envoyer automatiquement un listing BASIC contenu dans un fichier texte avec l’option `.X07` :
+
+```bash
+./x07 .X07 fichier_texte_basic.txt
+```
+
+Le fichier texte est alors injecté au clavier dans l’émulateur, comme si les lignes BASIC étaient tapées à la main sur le Canon X-07.
+
+Exemple de fichier `fichier_texte_basic.txt` :
+
+```basic
+10 PRINT "HELLO CANON X-07"
+20 FOR I=1 TO 10
+30 PRINT I
+40 NEXT I
+```
+
+Après l’injection, le programme peut être listé puis lancé :
+
+```basic
+LIST
+RUN
 ```
 
 ---
@@ -246,6 +294,16 @@ test.cas
 
 Puis charge le programme dans la mémoire BASIC.
 
+### Charger directement au lancement
+
+Pour aller plus vite, le fichier cassette peut être passé directement au lancement de l’émulateur :
+
+```bash
+./x07 TEST.cas
+```
+
+L’émulateur prépare alors automatiquement le chargement par `CLOAD`.
+
 ### Vérifier le programme chargé
 
 ```basic
@@ -257,6 +315,20 @@ Puis lancer :
 ```basic
 RUN
 ```
+
+---
+
+## Import de listings BASIC
+
+Pour développer ou tester plus rapidement, il est possible de préparer un programme BASIC dans un simple fichier texte, puis de l’injecter dans l’émulateur.
+
+Exemple :
+
+```bash
+./x07 .X07 programme.txt
+```
+
+Le contenu du fichier est envoyé au clavier virtuel du Canon X-07. C’est très pratique pour éviter de retaper un long programme à chaque essai.
 
 ---
 
