@@ -12,3 +12,6 @@ Debug/
 Release/
 .vscode/
 *.log
+old
+docs
+test
