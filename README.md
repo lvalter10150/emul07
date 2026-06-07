@@ -17,6 +17,7 @@ L’objectif n’est pas seulement d’afficher un prompt BASIC, mais de retrouv
 - démarrage du BASIC Canon X-07 ;
 - clavier et touches spéciales ;
 - affichage LCD ;
+- affichage TV X-720 expérimental dans une seconde fenêtre SDL ;
 - sons système et `BEEP` ;
 - sauvegarde et chargement cassette avec `CSAVE` et `CLOAD` ;
 - auto-chargement de fichiers cassette au lancement de l’émulateur ;
@@ -77,7 +78,11 @@ Les éléments suivants sont partiellement ou totalement pris en charge :
 
 - démarrage du BASIC Canon X-07 ;
 - exécution du BASIC ;
-- affichage texte via SDL2 ;
+- affichage texte via SDL2 pour le LCD du Canon X-07 ;
+- seconde fenêtre SDL expérimentale pour le module TV X-720 ;
+- intégration de la ROM X-720 / ROM TV en `A000h-AFFFh` ;
+- VRAM X-720 séparée en `8000h-97FFh` ;
+- premiers modes de rendu X-720 : visualisation mémoire, rendu texte ASCII simple et affichage par plans ;
 - gestion du clavier PC vers clavier Canon X-07 ;
 - touches spéciales `ON/BREAK`, `OFF`, `RESET` ;
 - sauvegarde temporaire de la RAM lors de l’extinction ;
@@ -227,6 +232,162 @@ Après l’injection, le programme peut être listé puis lancé :
 LIST
 RUN
 ```
+
+---
+
+## Module TV X-720
+
+Le projet commence à intégrer le module TV **Canon X-720**.
+
+Cette partie est encore expérimentale, mais plusieurs éléments importants fonctionnent déjà :
+
+- chargement de la ROM X-720 / ROM TV ;
+- mappage de la ROM TV en `A000h-AFFFh` ;
+- ajout d’une VRAM X-720 séparée en `8000h-97FFh` ;
+- gestion des ports vidéo `90h-97h` ;
+- prise en compte du bit de banking `+1K` ;
+- séparation de l’affichage LCD X-07 et de l’affichage TV X-720 ;
+- création d’une seconde fenêtre SDL dédiée à la TV ;
+- premiers rendus de debug par plans mémoire ;
+- rendu texte ASCII simple pour valider les écritures en VRAM.
+
+L’architecture actuellement utilisée est la suivante :
+
+```text
+8000h-97FFh : VRAM X-720
+A000h-AFFFh : ROM X-720 / ROM TV
+B000h-FFFFh : ROM BASIC Canon X-07
+90h-97h     : registres vidéo / contrôle X-720
+```
+
+### Fenêtres SDL
+
+L’émulateur utilise maintenant deux sorties vidéo séparées :
+
+```text
+Fenêtre LCD X-07 : affichage original 20 colonnes x 4 lignes
+Fenêtre TV X-720 : affichage expérimental du module TV
+```
+
+Le fichier `video.c` reste consacré à l’écran LCD du Canon X-07.
+
+Le fichier `video_x720.c` est dédié à la fenêtre TV X-720. Il permet de visualiser plusieurs plans de la VRAM et de tester les premiers rendus texte / graphique.
+
+### Tests X-720 validés
+
+Le mode `SCREEN 1` initialise correctement le module TV. Le test suivant écrit directement dans la VRAM texte :
+
+```basic
+10 SCREEN 1
+20 POKE &H8000,65
+30 POKE &H8001,66
+40 POKE &H8020,67
+50 POKE &H8021,68
+60 GOTO 60
+```
+
+Avec le banking `+1K`, les écritures logiques en `8000h` sont visibles dans le plan physique `8400h`. Le rendu texte de la fenêtre TV affiche alors :
+
+```text
+AB
+CD
+```
+
+Un test avec une chaîne complète fonctionne également :
+
+```basic
+10 SCREEN 1
+20 A=&H8000
+30 S$="HELLO X720"
+40 FOR I=1 TO LEN(S$)
+50 POKE A+I-1,ASC(MID$(S$,I,1))
+60 NEXT I
+70 GOTO 70
+```
+
+Ce test valide le chemin suivant :
+
+```text
+BASIC POKE &H8000
+        ↓
+WrZ80()
+        ↓
+X720_PhysAddr()
+        ↓
+X720_VRAM[]
+        ↓
+video_x720.c
+        ↓
+fenêtre SDL TV X-720
+```
+
+### Rendu texte actuel
+
+Pour le moment, le rendu texte X-720 est volontairement simple. Il ne cherche pas encore à reproduire parfaitement le contrôleur vidéo réel, mais il permet de vérifier que les caractères écrits en VRAM apparaissent bien dans la fenêtre TV.
+
+Le mode texte validé repose actuellement sur :
+
+```text
+SCREEN 1
+CTRL=23h
+PLUS1K=1
+adresse logique texte : 8000h
+adresse physique vue : 8400h
+largeur : 32 caractères par ligne
+```
+
+Formule utilisée pour le rendu texte :
+
+```c
+offset = 0x0400 + y * 32 + x;   /* plan physique 8400h */
+caractere = X720_VRAM[offset];
+```
+
+### Premières observations graphiques
+
+Le mode `SCREEN 3` est également en cours d’analyse. Les traces ont montré que certaines écritures graphiques passent par la routine ROM autour de `A72Eh`.
+
+Des tests avec `PSET` ont permis de comprendre un premier découpage en blocs :
+
+```text
+X=0..7     -> même octet VRAM
+X=8..15    -> octet suivant
+X=16..23   -> octet suivant
+X=24..31   -> octet suivant
+```
+
+Et verticalement :
+
+```text
+Y=0..11    -> même rangée de blocs
+Y=12..23   -> rangée suivante
+Y=24..35   -> rangée suivante
+Y=36..47   -> rangée suivante
+```
+
+La formule provisoire observée pour certains tests graphiques est :
+
+```c
+addr = 0x9000 + (y / 12) * 0x20 + (x / 8);
+```
+
+Cette partie reste expérimentale : elle sert pour l’instant à comprendre le codage de la VRAM et le comportement du contrôleur vidéo.
+
+### Touches de debug de la fenêtre TV
+
+La fenêtre TV X-720 dispose de quelques touches de debug selon la version de `video_x720.c` utilisée :
+
+| Touche | Fonction |
+|---|---|
+| `0` | Afficher le plan `8000h` |
+| `1` | Afficher le plan `8400h` |
+| `2` | Afficher le plan `9000h` |
+| `3` | Afficher le plan `9400h` |
+| `TAB` | Changer de plan |
+| `V` | Basculer entre mode valeurs / actif / texte |
+| `T` | Passer en rendu texte |
+
+Ces touches sont principalement destinées au debug de la VRAM X-720. Elles pourront évoluer au fur et à mesure de l’émulation réelle du contrôleur vidéo.
 
 ---
 
@@ -410,7 +571,8 @@ Les principaux fichiers du projet sont :
 | `x07cas` / `x07cas.c` | utilitaire de manipulation et conversion cassette |
 | `Z80.c` | cœur d’émulation Z80 / NSC800 |
 | `T6834.c` | émulation du contrôleur clavier / affichage / E/S |
-| `video.c` | gestion de l’affichage SDL |
+| `video.c` | gestion de l’affichage SDL du LCD X-07 |
+| `video_x720.c` | gestion expérimentale de la seconde fenêtre SDL TV X-720 |
 | `sound.c` | gestion des sons et bips |
 | `Debug.c` | traces et fonctions de debug |
 | `proto.h` | prototypes des fonctions |
@@ -430,6 +592,8 @@ Les points encore en cours ou à améliorer peuvent inclure :
 - gestion plus fidèle du clavier ;
 - amélioration du son cassette ;
 - support complet des périphériques ;
+- amélioration du rendu TV X-720 et émulation plus fidèle du contrôleur vidéo ;
+- bascule automatique propre entre les modes X-720 `SCREEN 1` et `SCREEN 3` ;
 - amélioration du chargement et de la sauvegarde cassette ;
 - compatibilité avec davantage de programmes BASIC.
 

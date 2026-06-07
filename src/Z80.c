@@ -641,12 +641,14 @@ word RunZ80(Z80 *R)
       if(!DebugZ80(R)) return(R->PC.W);
 #endif
 
+#if 0
     if ((R->PC.W >= 0xA000) && (R->PC.W <= 0xAFFF)) {
 		fprintf(stderr,
             "STOP: execution ROM TV absente PC=%04X SP=%04X HL=%04X\n",
             R->PC.W, R->SP.W, R->HL.W);
 		return R->PC.W;
 	}
+#endif
 
     I=OpZ80(R->PC.W++);
     R->ICount-=Cycles[I];

@@ -38,7 +38,6 @@
 #define AFF_DEBUG           0  // Affichage de debuggage (poubelle)
 
 #define BEG_RAM 0x0000
-//#define END_RAM 0xA000
 #define END_RAM 0x4000
 #define Taille_Ram 0x10000
 

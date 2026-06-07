@@ -68,13 +68,19 @@
 #include "var.h"
 #include "proto.h"
 #include "rom_xo7.h"
+#include "rom_x720c.h"
 
 /* Ces fonctions sont definies dans video.c. */
 void BasicText_Open(char *filename);
 void BasicText_Pump(void);
 
-#define USE_ROM_TV 0
-#define PATCH_MISSING_ROM_TV 1
+#define USE_ROM_TV 1
+#define PATCH_MISSING_ROM_TV 0
+
+#define X720_VRAM_START 0x8000
+#define X720_VRAM_END   0x97FF
+#define X720_VRAM_SIZE  0x1800
+
 #define X07_CPU_HZ 1574800UL
 #define SYNC_HZ    200
 #define SLICE_NS   (1000000000ULL / SYNC_HZ)
@@ -89,6 +95,21 @@ static byte K7_EOF       = 0;
 static byte K7_Read_Enabled = 0;
 static byte K7_Allow_Start   = 0;
 static uint64_t next_sync_ns = 0;
+
+/* X-720 : VRAM physique 6 Ko et dernier registre de contr�le vid�o. */
+byte X720_VRAM[X720_VRAM_SIZE];
+static byte X720_CTRL = 0x00;
+static int Trace_X720 = 1;
+
+/* Traces X-720 filtrées. Mettre à 1 ponctuellement pour réactiver une catégorie. */
+#define TRACE_X720_OUT        1
+#define TRACE_X720_IN         0
+#define TRACE_X720_VRAM_W     1
+#define TRACE_X720_VRAM_R     0
+#define TRACE_X720_RAM        1
+#define TRACE_X720_DUMP_ON_GRAPH_WRITE 0
+#define TRACE_X720_DUMP_MAX            16
+
 
 /* Injection retardee de la commande CLOAD.
  * Il ne faut pas l'envoyer avant que la ROM ait fini son demarrage,
@@ -371,6 +392,7 @@ int main (int argc, char **argv) {
 	/* Lancement de la fenetre X11 */
 	/*-----------------------------*/
 	iniscreen ();
+	X720_Video_Init();
 
 	if (Auto_Name) {
 		if (Auto_CLOAD) {
@@ -403,6 +425,7 @@ int main (int argc, char **argv) {
 	RunZ80(&Reg_Xo7);
 	/* Liberation de la memoire */
 	/*--------------------------*/
+	X720_Video_Close();
 	free (RAM);
 	/* Fin du programme */
 	/*------------------*/
@@ -492,40 +515,12 @@ void Power_Off_Xo7(void)
 	ClrScr();
 }
 
-//void Power_OnBreak_Xo7(void)
-//{
-	//if (Power_Off) {
-		//fprintf(stderr, "POWER ON X07\n");
-
-		//Power_Off = 0;
-		//IT_T6834 = 1;
-
-		//return;
-	//}
-
-	//fprintf(stderr, "ON/BREAK\n");
-	//General_Info.Break = 1;
-//}
-
 void Power_OnBreak_Xo7(void)
 {
 	if (Power_Off) {
 		fprintf(stderr, "POWER ON X07\n");
-
-		/*
-		 * ON après OFF :
-		 * - RAM conservée
-		 * - CPU redémarré par la ROM
-		 * - variables BASIC réinitialisées
-		 * - programme BASIC conservé
-		 */
 		Power_Off = 0;
 		X07_OnStat = 0x01;
-
-		/*
-		 * On ne touche PAS à RAM.
-		 * Par contre on remet l'état périphérique/CPU propre.
-		 */
 		memset((void*)&Port_FX, 0, sizeof(Port_FX));
 		memset((void*)&Clavier, 0, sizeof(Clavier));
 		memset((void*)&General_Info, 0, sizeof(General_Info));
@@ -550,10 +545,6 @@ void Power_OnBreak_Xo7(void)
 		return;
 	}
 
-	/*
-	 * Machine déjà allumée :
-	 * ON/BREAK agit comme BREAK.
-	 */
 	fprintf(stderr, "ON/BREAK\n");
 	General_Info.Break = 1;
 }
@@ -606,16 +597,6 @@ static int csave_try_extract_name(char *name, size_t name_sz)
 
 	best[0] = 0;
 
-	/*
-	 * Le flux cassette peut contenir des octets ASCII isoles avant le vrai nom.
-	 * L'ancienne version prenait le premier groupe plausible : avec
-	 * CSAVE "TEST", on pouvait donc ouvrir t.cas.
-	 *
-	 * Ici on attend d'avoir un peu d'entete, puis on prend le PLUS LONG groupe
-	 * ASCII plausible de 2 a 6 caracteres. Si aucun groupe >= 2 n'est trouve,
-	 * on attend encore, au lieu de creer trop tot un fichier avec une seule
-	 * lettre.
-	 */
 	if (CSave_Detect_Len < 16)
 		return 0;
 
@@ -925,15 +906,248 @@ void DisplayReg(register Z80 *R)
 /*--------------------------------------------------------------------------*/
 /* Ecriture des fonctions CPU Z80                                           */
 /*--------------------------------------------------------------------------*/
+
+static int X720_IsImportantRamAddr(word Addr)
+{
+    switch (Addr) {
+        case 0x00B6: /* page active */
+        case 0x00B7: /* page affichée */
+        case 0x00D1: /* mode écran actif */
+        case 0x04B7: /* registre/page interne */
+        case 0x04BA: /* flag accélération / bascule */
+        case 0x04C6: /* coordonnée X */
+        case 0x04C8: /* coordonnée Y */
+        case 0x04E5: /* couleur avant-plan */
+        case 0x04E6: /* couleur arrière-plan */
+        case 0x04E7: /* palette */
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static void Trace_X720_RamWrite(word Addr, byte Old, byte New)
+{
+    if (!Trace_X720 || !TRACE_X720_RAM)
+        return;
+
+    if (Old == New)
+        return;
+
+    if (!X720_IsImportantRamAddr(Addr))
+        return;
+
+    fprintf(stderr,
+            "[X720 RAM] PC=%04X ADDR=%04X OLD=%02X NEW=%02X A=%02X BC=%04X DE=%04X HL=%04X\n",
+            Reg_Xo7.PC.W,
+            Addr,
+            Old,
+            New,
+            Reg_Xo7.AF.B.h,
+            Reg_Xo7.BC.W,
+            Reg_Xo7.DE.W,
+            Reg_Xo7.HL.W);
+}
+
+/*
+ * Conversion adresse logique X-720 -> offset VRAM physique.
+ * La documentation X-720 indique que le bit +1K du registre 90h change
+ * le segment de 1 Ko adressé. C'est une première modélisation simple.
+ */
+static word X720_PhysAddr(word Addr)
+{
+    word off = Addr - X720_VRAM_START;
+
+    if (X720_CTRL & 0x20)
+        off += 0x0400;
+
+    off %= X720_VRAM_SIZE;
+    return off;
+}
+
+static int X720_IsPrintable(byte c)
+{
+    return (c >= 32 && c <= 126);
+}
+
+static int X720_ShouldTraceVramWrite(word Addr, word Phys, byte Old, byte New, word PC)
+{
+    (void)Addr;
+    (void)Phys;
+
+    /* Les écritures graphiques directes sont toujours intéressantes,
+     * même si OLD == NEW : plusieurs pixels voisins peuvent tomber dans
+     * le même octet VRAM. */
+    if (PC == 0xA72E)
+        return 1;
+
+    /* Nettoyages / remplissages massifs peu utiles en trace courante. */
+    if ((PC == 0xA832 || PC == 0xA824) && New == 0x00)
+        return 0;
+
+    /* Remplissage de zones avec des espaces pendant les changements d'écran. */
+    if ((PC == 0xA264 || PC == 0xA1A9) && Old == 0x00 && New == 0x20)
+        return 0;
+
+    /* Remise à zéro d'attributs texte très bavarde. */
+    if (PC == 0xA575 && Old == 0x20 && New == 0x00)
+        return 0;
+
+    return 1;
+}
+
+static void X720_Dump_Line(word Phys)
+{
+    word base;
+    int i;
+
+    if (Phys < X720_VRAM_START || Phys > X720_VRAM_END)
+        return;
+
+    base = Phys & 0xFFF0;
+
+    fprintf(stderr, "[X720 DUMP] %04X:", base);
+    for (i = 0; i < 16; i++) {
+        word a = base + i;
+        byte v = 0xFF;
+        if (a >= X720_VRAM_START && a <= X720_VRAM_END)
+            v = X720_VRAM[a - X720_VRAM_START];
+        fprintf(stderr, " %02X", v);
+    }
+
+    fprintf(stderr, "  |");
+    for (i = 0; i < 16; i++) {
+        word a = base + i;
+        byte v = '.';
+        if (a >= X720_VRAM_START && a <= X720_VRAM_END) {
+            byte b = X720_VRAM[a - X720_VRAM_START];
+            v = X720_IsPrintable(b) ? b : '.';
+        }
+        fputc(v, stderr);
+    }
+    fprintf(stderr, "|\n");
+}
+
+static void X720_Dump_TextBase(word Base)
+{
+    int y, x;
+
+    if (Base < X720_VRAM_START || Base + 0x80 > X720_VRAM_END + 1)
+        return;
+
+    fprintf(stderr, "[X720 TEXT %04X] base=%04X\n", Base, Base);
+
+    for (y = 0; y < 4; y++) {
+        fprintf(stderr, "  %02d: ", y);
+        for (x = 0; x < 32; x++) {
+            word a = Base + (y * 32) + x;
+            byte c = X720_VRAM[a - X720_VRAM_START];
+            fputc(X720_IsPrintable(c) ? c : '.', stderr);
+        }
+        fputc('\n', stderr);
+    }
+}
+
+static void X720_Dump_OnGraphWrite(word Addr, word Phys, byte Old, byte New)
+{
+#if TRACE_X720_DUMP_ON_GRAPH_WRITE
+    static unsigned int graph_count = 0;
+
+    graph_count++;
+
+    fprintf(stderr,
+            "[X720 GRAPH] #%u PC=%04X LOG=%04X PHYS=%04X OLD=%02X NEW=%02X CTRL=%02X\n",
+            graph_count,
+            Reg_Xo7.PC.W,
+            Addr,
+            Phys,
+            Old,
+            New,
+            X720_CTRL);
+
+    if (graph_count <= TRACE_X720_DUMP_MAX) {
+        X720_Dump_Line(Phys);
+        X720_Dump_TextBase(0x8000);
+        X720_Dump_TextBase(0x8400);
+    }
+#else
+    (void)Addr;
+    (void)Phys;
+    (void)Old;
+    (void)New;
+#endif
+}
+
 /** RdZ80()/WrZ80() ******************************************/
 /** These functions are called when access to RAM occurs.   **/
 /** They allow to control memory access.                    **/
 /************************************ TO BE WRITTEN BY USER **/
 void WrZ80(register word Addr, register byte Value)
 {
-    if ((Addr >= BEG_RAM) && (Addr < END_RAM)) {
-        RAM[Addr] = Value;
+    byte old;
+
+    /* ROM BASIC X-07 : �criture interdite. */
+    if (Addr >= 0xB000)
+        return;
+
+    /* ROM X-720 : �criture interdite. */
+    if ((Addr >= 0xA000) && (Addr <= 0xAFFF))
+        return;
+
+    /* VRAM X-720 : 8000h-97FFh. */
+    if ((Addr >= X720_VRAM_START) && (Addr <= X720_VRAM_END)) {
+        word off = X720_PhysAddr(Addr);
+
+        old = X720_VRAM[off];
+        X720_VRAM[off] = Value;
+
+        /*
+         * Toute modification de la VRAM X-720 doit rafraichir
+         * la fenetre TV, meme si l'ecriture vient d'un POKE BASIC
+         * et non d'une routine graphique ROM comme A72E.
+         */
+        if (old != Value) {
+            X720_Video_MarkDirty();
+        }
+
+        {
+            word phys = X720_VRAM_START + off;
+            int is_graph_write = (Reg_Xo7.PC.W == 0xA72E);
+
+            if (Trace_X720 && TRACE_X720_VRAM_W && (old != Value || is_graph_write)) {
+                if (X720_ShouldTraceVramWrite(Addr, phys, old, Value, Reg_Xo7.PC.W)) {
+                    fprintf(stderr,
+                            "[X720 VRAM W] PC=%04X ADDR=%04X PHYS=%04X OLD=%02X NEW=%02X CTRL=%02X\n",
+                            Reg_Xo7.PC.W,
+                            Addr,
+                            phys,
+                            old,
+                            Value,
+                            X720_CTRL);
+                }
+
+                if (is_graph_write) {
+                    X720_Dump_OnGraphWrite(Addr, phys, old, Value);
+                }
+
+            }
+        }
+
+        return;
     }
+
+    /* RAM normale X-07 uniquement. */
+    if ((Addr >= BEG_RAM) && (Addr < END_RAM)) {
+        old = RAM[Addr];
+        RAM[Addr] = Value;
+
+        if (old != Value)
+            Trace_X720_RamWrite(Addr, old, Value);
+
+        return;
+    }
+
+    /* Zone non �quip�e : �criture ignor�e. */
 }
 
 byte RdZ80(register word Addr)
@@ -949,17 +1163,47 @@ byte RdZ80(register word Addr)
         }
     }
 
+    /* ROM BASIC X-07. */
     if ((Addr >= 0xB000) && (Addr <= 0xFFFF))
         return ROM[Addr - 0xB000];
 
+    /* ROM X-720 / ROM TV. */
+#if USE_ROM_TV
+    if ((Addr >= 0xA000) && (Addr <= 0xAFFF))
+        return ROMTV[Addr - 0xA000];
+#else
     if ((Addr >= 0xA000) && (Addr <= 0xAFFF)) {
         fprintf(stderr,
                 "ROM TV absente: lecture Addr=%04X depuis PC=%04X SP=%04X HL=%04X\n",
                 Addr, Reg_Xo7.PC.W, Reg_Xo7.SP.W, Reg_Xo7.HL.W);
         return 0xFF;
     }
+#endif
 
-    return RAM[Addr];
+    /* VRAM X-720 : 8000h-97FFh. */
+    if ((Addr >= X720_VRAM_START) && (Addr <= X720_VRAM_END)) {
+        word off = X720_PhysAddr(Addr);
+        byte v = X720_VRAM[off];
+
+        if (Trace_X720 && TRACE_X720_VRAM_R) {
+            fprintf(stderr,
+                    "[X720 VRAM R] PC=%04X ADDR=%04X PHYS=%04X VAL=%02X CTRL=%02X\n",
+                    Reg_Xo7.PC.W,
+                    Addr,
+                    X720_VRAM_START + off,
+                    v,
+                    X720_CTRL);
+        }
+
+        return v;
+    }
+
+    /* RAM normale X-07. */
+    if ((Addr >= BEG_RAM) && (Addr < END_RAM))
+        return RAM[Addr];
+
+    /* Zone non �quip�e. */
+    return 0xFF;
 }
 
 /** InZ80()/OutZ80() *****************************************/
@@ -1066,6 +1310,42 @@ void OutZ80(register word Port,register byte Value) {
             Port_FX.W.F7 = Value;
             Port_FX.R.F7 = Value;
             break;
+        case 0x90:
+        case 0x91:
+        case 0x92:
+        case 0x93:
+        case 0x94:
+        case 0x95:
+        case 0x96:
+        case 0x97:
+            X720_CTRL = Value;
+
+            /*
+             * A011 alterne souvent 83/03 pour la sortie/cursor : trop bavard.
+             * On garde les changements de mode et commandes ROM utiles.
+             */
+            if (Trace_X720 && TRACE_X720_OUT &&
+                !(Reg_Xo7.PC.W == 0xA011 && (Value == 0x83 || Value == 0x03))) {
+                fprintf(stderr,
+                        "[X720 OUT] PC=%04X PORT=%02X VALUE=%02X "
+                        "A=%02X BC=%04X DE=%04X HL=%04X "
+                        "FSR=%d AG=%d PLUS1K=%d GM=%d CSS=%d\n",
+                        Reg_Xo7.PC.W,
+                        Port & 0xFF,
+                        Value,
+                        Reg_Xo7.AF.B.h,
+                        Reg_Xo7.BC.W,
+                        Reg_Xo7.DE.W,
+                        Reg_Xo7.HL.W,
+                        (Value >> 7) & 1,
+                        (Value >> 6) & 1,
+                        (Value >> 5) & 1,
+                        (Value >> 2) & 7,
+                        Value & 3);
+            }
+            return;
+        case 0xDF:
+            return;
 		default:
 			fprintf (stderr,"Erreur de port ....");
 			fprintf(stderr,
@@ -1092,6 +1372,40 @@ byte InZ80(register word Port) {
 
 	byte Value=0;
 	switch (Port) {
+        case 0x90:
+        case 0x91:
+        case 0x92:
+        case 0x93:
+        case 0x94:
+        case 0x95:
+        case 0x96:
+        case 0x97:
+        {
+            byte ret = 0x00;
+
+            if (Trace_X720 && TRACE_X720_IN) {
+                static unsigned long x720_in_count = 0;
+                x720_in_count++;
+
+                /* Trace échantillonnée uniquement si activée. */
+                if ((x720_in_count % 1000) == 0) {
+                    fprintf(stderr,
+                            "[X720 IN ] PC=%04X PORT=%02X RET=%02X "
+                            "A=%02X BC=%04X DE=%04X HL=%04X CTRL=%02X count=%lu\n",
+                            Reg_Xo7.PC.W,
+                            Port & 0xFF,
+                            ret,
+                            Reg_Xo7.AF.B.h,
+                            Reg_Xo7.BC.W,
+                            Reg_Xo7.DE.W,
+                            Reg_Xo7.HL.W,
+                            X720_CTRL,
+                            x720_in_count);
+                }
+            }
+
+            return ret;
+        }
 		case 0xF0 : /* Controle des interruptions */
 			Value = Port_FX.R.F0;
 			break;
@@ -1251,6 +1565,7 @@ word LoopZ80(register Z80 *R)
     sync_emulation();
 
 	Event = Voir_Xevent();
+	X720_Video_Service();
 
 	if (Event == 27)
 		return INT_QUIT;
@@ -1258,6 +1573,7 @@ word LoopZ80(register Z80 *R)
 	if (Power_Off) {
 		while (Power_Off) {
 			Event = Voir_Xevent();
+			X720_Video_Service();
 			if (Event == 27)
 				return INT_QUIT;
 
@@ -1505,3 +1821,5 @@ int Load_Ram_Temp(void)
 
 	return RC_OK;
 }
+
+

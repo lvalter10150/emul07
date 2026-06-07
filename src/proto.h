@@ -47,6 +47,7 @@ int Save_Ram_Temp     (void);
 int Load_Ram_Temp     (void);
 void Power_Off_Xo7    (void);
 void Power_OnBreak_Xo7(void);
+void X720_Dump_Text   (void);
 
 /* T6834.c */
 /*---------*/
@@ -82,6 +83,18 @@ byte TestChr_IsDown(byte chr);
 void TestChr_Clear(byte chr);
 void X07_LCD_Off(void);
 void X07_LCD_On(void);
+
+/* Video X-720.c */
+/*---------------*/
+int  X720_Video_Init(void);
+void X720_Video_Close(void);
+void X720_Video_SetEnabled(int enabled);
+void X720_Video_MarkDirty(void);
+void X720_Video_Update(void);
+void X720_Video_Service(void);
+int  X720_Video_HandleEvent(const void *event);
+void X720_Video_DebugDump(void);
+void X720_Video_SelfTest(void);
 
 /* Sound.c */
 /*---------*/

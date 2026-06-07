@@ -27,14 +27,14 @@ def generate_c_array(hex_values):
     return c_array
 
 def main():
-    file_path = "rom_xo7.bin"  # Remplacez "example.bin" par le chemin de votre fichier binaire
+    file_path = "x720c.bin"  # Remplacez "example.bin" par le chemin de votre fichier binaire
     hex_values = binary_to_hex(file_path)
     c_array = generate_c_array(hex_values)
 
     print(len(hex_values))
     
-    #print("Tableau en hexadécimal pour utilisation en C:")
-    #print(c_array)
+    print("Tableau en hexadécimal pour utilisation en C:")
+    print(c_array)
 
 if __name__ == "__main__":
     main()

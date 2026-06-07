@@ -6,7 +6,7 @@ CC       = gcc
 
 CFLAGS   = -g -O2 -DLSB_FIRST -g -Wall
 
-OBJ = Z80.o Debug.o x07.o T6834.o video.o sound.o
+OBJ = Z80.o Debug.o x07.o T6834.o video.o video_x720.o sound.o
 
 x07:$(OBJ)
 	gcc -O2 -Wall -Wextra -o x07cas wav2cas_x07.c
@@ -26,6 +26,9 @@ T6834.o:T6834.c Z80.h Tables.h var.h struct.h const.h proto.h
 
 video.o:T6834.c Z80.h Tables.h var.h struct.h const.h proto.h video.c
 	gcc $(CFLAGS) -c -O video.c $(inc_X11)
+
+video_x720.o: video_x720.c Z80.h var.h struct.h const.h proto.h
+	gcc $(CFLAGS) -c -O video_x720.c
 
 lit_ini.o:lit_ini.c
 	gcc $(CFLAGS) -c -O lit_ini.c

@@ -325,6 +325,11 @@ int Voir_Xevent()
 	static int Ignore_TextInput_Count = 0;
 	
 	while (SDL_PollEvent(&event)) {
+		/* La fenetre TV X-720 est separee : ses evenements ne doivent pas
+		 * fermer l'emulateur principal. */
+		if (X720_Video_HandleEvent(&event))
+			continue;
+
 		switch(event.type) {
 			case SDL_QUIT:
 				ret = 27;
