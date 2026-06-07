@@ -18,6 +18,14 @@
            
 */
 /*--------------------------------------------------------------------------*/
+/*                         History                                          */
+/*--------------------------------------------------------------------------*/
+/*   Date   | Author    | Vers.  | Changes                                  */
+/*----------+-----------+--------+------------------------------------------*/
+/* 18/12/00 | J.BRIGAUD |  0001  | Creation                                 */
+/* 10/05/26 | L.VALTER  |  0003  | Suite                                    */
+/*----------+-----------+--------+------------------------------------------*/
+
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -980,16 +988,13 @@ void OutZ80(register word Port,register byte Value) {
 			Port_FX.W.F3 = Value;
 			break;
 		case 0xF4 : /* Modes */
+			/*
 			Port_FX.W.F4 = Value;
 			Port_FX.R.F4 = Value;
-
-			/* Ne pas demarrer/arreter la K7 ici.
-			 * Pendant CLOAD, la ROM modifie F4 pour d'autres raisons.
-			 * Le vrai depart lecture se fait sur OUT F5 bit 0x04.
-			 */
 			if (K7_Read_Enabled && (Port_FX.W.F5 & 0x04))
 				Receive_from_K7(&Port_FX);
-
+			*/
+			Value = Port_FX.R.F4 & ~0x0E;
 			break;
 		case 0xF5 : /* Interruptions (RESET) */
 			Port_FX.W.F5 = Value;
@@ -1019,19 +1024,6 @@ void OutZ80(register word Port,register byte Value) {
 			break;
 		case 0xF6:
             if (Value == 0x10) {
-                /*
-                fprintf(stderr,
-                    "[BEEP/F6] PC=%04X OUT F6,%02X F4=%02X F6W=%02X F6R=%02X F2=%02X F3=%02X\n",
-                    Reg_Xo7.PC.W,
-                    Value,
-                    Port_FX.W.F4,
-                    Port_FX.W.F6,
-                    Port_FX.R.F6,
-                    Port_FX.W.F2,
-                    Port_FX.W.F3
-                );
-                fflush(stderr);
-				*/
                 /*
                  * On joue uniquement sur DEA1 pour éviter le double beep.
                  */
