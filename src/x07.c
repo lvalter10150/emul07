@@ -101,6 +101,11 @@ byte X720_VRAM[X720_VRAM_SIZE];
 static byte X720_CTRL = 0x00;
 static int Trace_X720 = 1;
 
+byte X720_GetCtrl(void)
+{
+    return X720_CTRL;
+}
+
 /* Traces X-720 filtrées. Mettre à 1 ponctuellement pour réactiver une catégorie. */
 #define TRACE_X720_OUT        1
 #define TRACE_X720_IN         0
@@ -1086,11 +1091,11 @@ void WrZ80(register word Addr, register byte Value)
 {
     byte old;
 
-    /* ROM BASIC X-07 : �criture interdite. */
+    /* ROM BASIC X-07 : ecriture interdite. */
     if (Addr >= 0xB000)
         return;
 
-    /* ROM X-720 : �criture interdite. */
+    /* ROM X-720 : ecriture interdite. */
     if ((Addr >= 0xA000) && (Addr <= 0xAFFF))
         return;
 
@@ -1101,18 +1106,45 @@ void WrZ80(register word Addr, register byte Value)
         old = X720_VRAM[off];
         X720_VRAM[off] = Value;
 
-        /*
-         * Toute modification de la VRAM X-720 doit rafraichir
-         * la fenetre TV, meme si l'ecriture vient d'un POKE BASIC
-         * et non d'une routine graphique ROM comme A72E.
-         */
-        if (old != Value) {
+        /* Toute modification de VRAM doit rafraichir la fenetre X-720. */
+        if (old != Value)
             X720_Video_MarkDirty();
-        }
 
         {
             word phys = X720_VRAM_START + off;
             int is_graph_write = (Reg_Xo7.PC.W == 0xA72E);
+
+            /*
+             * Premier rendu graphique propre : la ROM X-720 calcule deja
+             * les coordonnees et les place dans la zone systeme.
+             * PC=A72E correspond aux ecritures graphiques observees avec
+             * PSET/PRESET. On met a jour une memoire de pixels logique,
+             * plutot que de decoder toute la VRAM brute comme une image.
+             */
+            if (is_graph_write) {
+				fprintf(stderr,
+						"[X720 GFX CALL] ADDR=%04X PHYS=%04X OLD=%02X NEW=%02X "
+						"X=%d Y=%d FG=%02X BG=%02X CTRL=%02X\n",
+						Addr,
+						phys,
+						old,
+						Value,
+						RAM[0x04C6],
+						RAM[0x04C8],
+						RAM[0x04E5],
+						RAM[0x04E6],
+						X720_CTRL);
+
+				X720_GfxWriteFromRom(Addr,
+									 phys,
+									 old,
+									 Value,
+									 RAM[0x04C6],
+									 RAM[0x04C8],
+									 RAM[0x04E5],
+									 RAM[0x04E6],
+									 X720_CTRL);
+			}
 
             if (Trace_X720 && TRACE_X720_VRAM_W && (old != Value || is_graph_write)) {
                 if (X720_ShouldTraceVramWrite(Addr, phys, old, Value, Reg_Xo7.PC.W)) {
@@ -1159,6 +1191,36 @@ byte RdZ80(register word Addr)
             (Addr >= 0xDE9F && Addr <= 0xDEA6)) {
             if (last_trace_pc != Addr) {
                 last_trace_pc = Addr;
+            }
+        }
+
+        /*
+         * Trace temporaire X-720.
+         * LoopZ80() ne voit pas toutes les instructions, car RunZ80()
+         * execute un paquet d'instructions entre deux retours.
+         * Ici, RdZ80() voit le fetch opcode a l'adresse PC, donc on
+         * peut verifier le passage dans la zone PSET/PRESET/POINT
+         * de la ROM TV.
+         */
+        if (Trace_X720 && (Addr >= 0xABF0) && (Addr <= 0xAC20)) {
+            static word last_x720_pset_pc = 0xFFFF;
+
+            if (last_x720_pset_pc != Addr) {
+                last_x720_pset_pc = Addr;
+                fprintf(stderr,
+                        "[X720 PSET FETCH] PC=%04X OP=%02X A=%02X BC=%04X DE=%04X HL=%04X "
+                        "04C6=%02X 04C8=%02X 04E5=%02X 04E6=%02X CTRL=%02X\n",
+                        Addr,
+                        ROMTV[Addr - 0xA000],
+                        Reg_Xo7.AF.B.h,
+                        Reg_Xo7.BC.W,
+                        Reg_Xo7.DE.W,
+                        Reg_Xo7.HL.W,
+                        RAM[0x04C6],
+                        RAM[0x04C8],
+                        RAM[0x04E5],
+                        RAM[0x04E6],
+                        X720_CTRL);
             }
         }
     }
@@ -1318,7 +1380,18 @@ void OutZ80(register word Port,register byte Value) {
         case 0x95:
         case 0x96:
         case 0x97:
-            X720_CTRL = Value;
+            {
+                byte old_ctrl = X720_CTRL;
+                X720_CTRL = Value;
+
+                /*
+                 * Lors du passage en mode graphique, on repart sur un ecran
+                 * logique vide. Cela evite d'afficher comme pixels les octets
+                 * d'initialisation de la VRAM brute.
+                 */
+                if ((Value & 0x40) && old_ctrl != Value)
+                    X720_GfxClear(0);
+            }
 
             /*
              * A011 alterne souvent 83/03 pour la sortie/cursor : trop bavard.

@@ -1,30 +1,5 @@
 /*
-
-     CCCCCC       A       NNN     NN   OOOOOOOO   NNN     NN 
-    CC          AA AA     NN N    NN  OO      OO  NN N    NN
-    CC         AA   AA    NN  N   NN  OO      OO  NN  N   NN
-    CC        AA    AA    NN   N  NN  OO      OO  NN   N  NN
-    CC       AAAAAAAAAA   NN    N NN  OO      OO  NN    N NN
-    CC       AA      AA   NN     NNN  OO      OO  NN     NNN
-     CCCCCC  AA      AA   NN      NN   OOOOOOOO   NN      NN 
-
-             XX      XX    OOOOOOOO   7777777777
-              XX    XX    OO      OO         77
-               XX  XX     OO      OO        77
-                XXXX      OO      OO       77
-               XX  XX     OO      OO      77
-              XX    XX    OO      OO     77
-             XX      XX    OOOOOOOO     77
-           
-*/
-/*--------------------------------------------------------------------------*/
-/*                         History                                          */
-/*--------------------------------------------------------------------------*/
-/*   Date   | Author    | Vers.  | Changes                                  */
-/*----------+-----------+--------+------------------------------------------*/
-/* 08/06/26 | L.VALTER  |  0001  | Creation                                 */
-/*----------+-----------+--------+------------------------------------------*/
-/* video_x720.c
+ * video_x720.c
  *
  * Fenetre SDL separee pour la sortie TV / module X-720 du Canon X-07.
  *
@@ -36,7 +11,9 @@
  *   - touche 3 : plan physique 9400h ;
  *   - TAB      : change de plan ;
  *   - V        : change de mode valeurs/actif ;
- *   - T        : bascule rendu texte ASCII/debug ;
+ *   - T        : rendu texte ASCII ;
+ *   - A        : rendu auto MC6847 simplifie selon X720_CTRL ;
+ *   - G        : rendu graphique MC6847 simplifie force ;
  *   - rafraichissement periodique pour ne pas dependre uniquement du dirty flag.
  */
 
@@ -71,17 +48,21 @@
  */
 #define X720_COLS           32
 #define X720_ROWS_ZOOM      64
-#define X720_CELL_W         32   /* x2 */
-#define X720_CELL_H         16   /* x2 */
-#define X720_MARGIN_X       24
-#define X720_MARGIN_Y       24
+#define X720_CELL_W         24
+#define X720_CELL_H         9
+#define X720_MARGIN_X       12
+#define X720_MARGIN_Y       12
 #define X720_PANEL_W        (X720_COLS * X720_CELL_W)
 #define X720_PANEL_H        (X720_ROWS_ZOOM * X720_CELL_H)
 
-#define X720_WIN_W          (X720_MARGIN_X * 2 + X720_PANEL_W)
-#define X720_WIN_H          (X720_MARGIN_Y * 2 + X720_PANEL_H)
+/* Taille de la zone TV logique : 256 x 192, agrandie par X720_GFX_SCALE.
+ * La grille debug 32 x 64 utilise les memes dimensions finales.
+ */
+#define X720_WIN_W          (X720_MARGIN_X * 2 + X720_GFX_W * X720_GFX_SCALE)
+#define X720_WIN_H          (X720_MARGIN_Y * 2 + X720_GFX_H * X720_GFX_SCALE)
 
 extern byte X720_VRAM[X720_VRAM_SIZE];
+extern byte X720_GetCtrl(void);
 
 static SDL_Window   *x720_window = NULL;
 static SDL_Renderer *x720_renderer = NULL;
@@ -95,8 +76,40 @@ static Uint32        x720_last_update_ms = 0;
 /* 0=8000, 1=8400, 2=9000, 3=9400 */
 static int           x720_view_plane = 1;
 
-/* 0=valeurs visibles, 1=actif seulement, 2=texte ASCII. */
-static int           x720_color_mode = 2;
+/*
+ * 0 = valeurs brutes
+ * 1 = actif seulement
+ * 2 = texte ASCII simple
+ * 3 = auto MC6847 simplifie selon X720_CTRL
+ * 4 = graphique MC6847 simplifie force
+ */
+static int           x720_color_mode = 3;   /* mode automatique par defaut */
+
+
+/*
+ * Ecran graphique logique X-720.
+ *
+ * Pour avancer proprement, on ne force plus l'affichage graphique a relire
+ * toute la VRAM brute. Les routines ROM X-720 savent deja calculer les
+ * coordonnees. x07.c signale les ecritures graphiques importantes
+ * (notamment PC=A72E pour PSET/PRESET) avec les coordonnees systeme
+ * 04C6/04C8 et la couleur courante 04E5.
+ */
+#define X720_GFX_W          256
+#define X720_GFX_H          192
+#define X720_GFX_SCALE      3
+
+#define X720_TEXT_CELL_W    (X720_GFX_W * X720_GFX_SCALE / 32)
+#define X720_TEXT_CELL_H    (X720_GFX_H * X720_GFX_SCALE / 16)
+#define X720_TEXT_PANEL_W   (X720_GFX_W * X720_GFX_SCALE)
+#define X720_TEXT_PANEL_H   (X720_GFX_H * X720_GFX_SCALE)
+
+static byte          x720_pixels[X720_GFX_H][X720_GFX_W];
+static int           x720_pixels_active = 0;
+
+
+/* Prototypes locaux utilises avant leur definition. */
+void X720_Video_MarkDirty(void);
 
 static const word x720_plane_base[4] = {
     X720_PLANE_8000,
@@ -111,6 +124,117 @@ static const char *x720_plane_name[4] = {
     "9000h",
     "9400h"
 };
+
+
+void X720_GfxClear(byte color)
+{
+    int y, x;
+
+    for (y = 0; y < X720_GFX_H; y++) {
+        for (x = 0; x < X720_GFX_W; x++)
+            x720_pixels[y][x] = color;
+    }
+
+    x720_pixels_active = (color != 0x00) ? (X720_GFX_W * X720_GFX_H) : 0;
+    X720_Video_MarkDirty();
+}
+
+void X720_GfxSetPixel(int x, int y, byte color)
+{
+    byte old;
+
+    if (x < 0 || x >= X720_GFX_W || y < 0 || y >= X720_GFX_H)
+        return;
+
+    old = x720_pixels[y][x];
+    x720_pixels[y][x] = color;
+
+    if (old == 0x00 && color != 0x00)
+        x720_pixels_active++;
+    else if (old != 0x00 && color == 0x00 && x720_pixels_active > 0)
+        x720_pixels_active--;
+
+    X720_Video_MarkDirty();
+}
+
+void X720_GfxWriteFromRom(word logical_addr,
+                          word phys_addr,
+                          byte old_value,
+                          byte new_value,
+                          int x,
+                          int y,
+                          byte fg,
+                          byte bg,
+                          byte ctrl)
+{
+    int offset;
+    int byte_x;
+    int yy;
+    int x_base;
+    int p;
+
+    (void)phys_addr;
+    (void)old_value;
+    (void)x;
+    (void)y;
+    (void)bg;
+
+    /*
+     * Pour l'instant, on traite surtout SCREEN 3 / CTRL=72.
+     */
+    if ((ctrl & 0x40) == 0)
+        return;
+
+    if (logical_addr < 0x8000 || logical_addr > 0x8FFF)
+        return;
+
+    /*
+     * Filtre les gros nettoyages observés pendant SCREEN 3.
+     */
+    if (old_value == 0x20 && new_value == 0x00)
+        return;
+
+    if (old_value == 0x20 && new_value == 0x20)
+        return;
+
+    if (old_value == 0x00 && new_value == 0x00)
+        return;
+
+    offset = logical_addr - 0x8000;
+
+    /*
+     * SCREEN 3 observé :
+     * 32 octets par ligne.
+     * 1 octet = 4 pixels MC6847 de 2 bits.
+     * Mais côté coordonnées BASIC, cela correspond à 8 pas horizontaux.
+     */
+    byte_x = offset & 0x1F;
+    yy     = offset >> 5;
+
+    if (yy < 0 || yy >= 192)
+        return;
+
+    x_base = byte_x * 8;
+
+    /*
+     * Décode les 4 groupes de 2 bits.
+     * Chaque groupe est affiché sur 2 pixels horizontaux pour respecter
+     * l'échelle BASIC observée : X=8 -> ADDR=8001.
+     */
+    for (p = 0; p < 4; p++) {
+        int shift = 6 - (p * 2);
+        int v = (new_value >> shift) & 0x03;
+
+        if (v != 0) {
+            byte color = fg ? fg : (byte)v;
+
+            X720_GfxSetPixel(x_base + p * 2,     yy, color);
+            X720_GfxSetPixel(x_base + p * 2 + 1, yy, color);
+        }
+    }
+
+    X720_Video_MarkDirty();
+}
 
 static byte X720_ReadByte(word off)
 {
@@ -129,6 +253,40 @@ static int X720_IsActiveValue(byte v)
     return (v != 0x00 && v != 0x20);
 }
 
+static const char *X720_RenderModeName(void)
+{
+    switch (x720_color_mode) {
+        case 0: return "valeurs";
+        case 1: return "actif";
+        case 2: return "texte";
+        case 3: return "auto";
+        case 4: return "graphique";
+        default: return "?";
+    }
+}
+
+static word X720_AutoPlaneBase(byte ctrl)
+{
+    /*
+     * Bit +1K du registre 90h : redirection logique 8000h -> physique 8400h.
+     * CTRL=23 : SCREEN 1 texte, +1K actif -> plan 8400h.
+     * CTRL=72 : SCREEN 3 graphique, +1K actif -> plan 8400h.
+     * CTRL=03 : sans +1K -> plan 8000h.
+     */
+    return (ctrl & 0x20) ? X720_PLANE_8400 : X720_PLANE_8000;
+}
+
+static int X720_AutoIsGraphics(byte ctrl)
+{
+    /* AG observe sur OUT 90h : CTRL=72 -> graphique, CTRL=23 -> texte. */
+    return (ctrl & 0x40) ? 1 : 0;
+}
+
+static const char *X720_AutoKindName(byte ctrl)
+{
+    return X720_AutoIsGraphics(ctrl) ? "auto-graph" : "auto-texte";
+}
+
 static void X720_SetWindowTitle(void)
 {
     char title[128];
@@ -136,10 +294,22 @@ static void X720_SetWindowTitle(void)
     if (x720_window == NULL)
         return;
 
-    snprintf(title, sizeof(title),
-             "Canon X-07 - X-720 TV - plan %s - mode %s",
-             x720_plane_name[x720_view_plane],
-             (x720_color_mode == 0) ? "valeurs" : ((x720_color_mode == 1) ? "actif" : "texte"));
+    if (x720_color_mode == 3) {
+        byte ctrl = X720_GetCtrl();
+        word auto_base = X720_AutoPlaneBase(ctrl);
+
+        snprintf(title, sizeof(title),
+                 "Canon X-07 - X-720 TV - AUTO %s base=%04X CTRL=%02X",
+                 X720_AutoKindName(ctrl),
+                 0x8000 + auto_base,
+                 ctrl);
+    } else {
+        snprintf(title, sizeof(title),
+                 "Canon X-07 - X-720 TV - plan %s - mode %s - CTRL=%02X",
+                 x720_plane_name[x720_view_plane],
+                 X720_RenderModeName(),
+                 X720_GetCtrl());
+    }
     SDL_SetWindowTitle(x720_window, title);
 }
 
@@ -172,91 +342,182 @@ static void X720_SetColorForValue(byte v)
 }
 
 
-static void X720_GetGlyphRows(unsigned char c, byte rows[7])
+
+/*
+ * Police MC6847 8x12 issue du pilote MAME mc6847.cpp.
+ * Source MAME : mc6847_friend_device::vdg_fontdata8x12
+ * Licence d'origine : BSD-3-Clause.
+ *
+ * Organisation :
+ *   index 0..63  : jeu MC6847 standard, code caractere = c & 0x3F
+ *   index 64..95 : extension minuscules presente dans la table MAME
+ */
+static const byte X720_MC6847_FONT_8X12[] =
 {
-    int i;
+0x00, 0x00, 0x00, 0x1C, 0x22, 0x02, 0x1A, 0x2A, 0x2A, 0x1C, 0x00, 0x00, /* @ */
+	0x00, 0x00, 0x00, 0x08, 0x14, 0x22, 0x22, 0x3E, 0x22, 0x22, 0x00, 0x00, /* A */
+	0x00, 0x00, 0x00, 0x3C, 0x12, 0x12, 0x1C, 0x12, 0x12, 0x3C, 0x00, 0x00, /* B */
+	0x00, 0x00, 0x00, 0x1C, 0x22, 0x20, 0x20, 0x20, 0x22, 0x1C, 0x00, 0x00, /* C */
+	0x00, 0x00, 0x00, 0x3C, 0x12, 0x12, 0x12, 0x12, 0x12, 0x3C, 0x00, 0x00, /* D */
+	0x00, 0x00, 0x00, 0x3E, 0x20, 0x20, 0x3C, 0x20, 0x20, 0x3E, 0x00, 0x00, /* E */
+	0x00, 0x00, 0x00, 0x3E, 0x20, 0x20, 0x3C, 0x20, 0x20, 0x20, 0x00, 0x00, /* F */
+	0x00, 0x00, 0x00, 0x1E, 0x20, 0x20, 0x26, 0x22, 0x22, 0x1E, 0x00, 0x00, /* G */
+	0x00, 0x00, 0x00, 0x22, 0x22, 0x22, 0x3E, 0x22, 0x22, 0x22, 0x00, 0x00, /* H */
+	0x00, 0x00, 0x00, 0x1C, 0x08, 0x08, 0x08, 0x08, 0x08, 0x1C, 0x00, 0x00, /* I */
+	0x00, 0x00, 0x00, 0x02, 0x02, 0x02, 0x02, 0x22, 0x22, 0x1C, 0x00, 0x00, /* J */
+	0x00, 0x00, 0x00, 0x22, 0x24, 0x28, 0x30, 0x28, 0x24, 0x22, 0x00, 0x00, /* K */
+	0x00, 0x00, 0x00, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x3E, 0x00, 0x00, /* L */
+	0x00, 0x00, 0x00, 0x22, 0x36, 0x2A, 0x2A, 0x22, 0x22, 0x22, 0x00, 0x00, /* M */
+	0x00, 0x00, 0x00, 0x22, 0x32, 0x2A, 0x26, 0x22, 0x22, 0x22, 0x00, 0x00, /* N */
+	0x00, 0x00, 0x00, 0x3E, 0x22, 0x22, 0x22, 0x22, 0x22, 0x3E, 0x00, 0x00, /* O */
+	0x00, 0x00, 0x00, 0x3C, 0x22, 0x22, 0x3C, 0x20, 0x20, 0x20, 0x00, 0x00, /* P */
+	0x00, 0x00, 0x00, 0x1C, 0x22, 0x22, 0x22, 0x2A, 0x24, 0x1A, 0x00, 0x00, /* Q */
+	0x00, 0x00, 0x00, 0x3C, 0x22, 0x22, 0x3C, 0x28, 0x24, 0x22, 0x00, 0x00, /* R */
+	0x00, 0x00, 0x00, 0x1C, 0x22, 0x10, 0x08, 0x04, 0x22, 0x1C, 0x00, 0x00, /* S */
+	0x00, 0x00, 0x00, 0x3E, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x00, 0x00, /* T */
+	0x00, 0x00, 0x00, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x1C, 0x00, 0x00, /* U */
+	0x00, 0x00, 0x00, 0x22, 0x22, 0x22, 0x14, 0x14, 0x08, 0x08, 0x00, 0x00, /* V */
+	0x00, 0x00, 0x00, 0x22, 0x22, 0x22, 0x2A, 0x2A, 0x36, 0x22, 0x00, 0x00, /* W */
+	0x00, 0x00, 0x00, 0x22, 0x22, 0x14, 0x08, 0x14, 0x22, 0x22, 0x00, 0x00, /* X */
+	0x00, 0x00, 0x00, 0x22, 0x22, 0x14, 0x08, 0x08, 0x08, 0x08, 0x00, 0x00, /* Y */
+	0x00, 0x00, 0x00, 0x3E, 0x02, 0x04, 0x08, 0x10, 0x20, 0x3E, 0x00, 0x00, /* Z */
+	0x00, 0x00, 0x00, 0x38, 0x20, 0x20, 0x20, 0x20, 0x20, 0x38, 0x00, 0x00, /* [ */
+	0x00, 0x00, 0x00, 0x20, 0x20, 0x10, 0x08, 0x04, 0x02, 0x02, 0x00, 0x00, /* \ */
+	0x00, 0x00, 0x00, 0x0E, 0x02, 0x02, 0x02, 0x02, 0x02, 0x0E, 0x00, 0x00, /* ] */
+	0x00, 0x00, 0x00, 0x08, 0x1C, 0x2A, 0x08, 0x08, 0x08, 0x08, 0x00, 0x00, /* up arrow */
+	0x00, 0x00, 0x00, 0x00, 0x08, 0x10, 0x3E, 0x10, 0x08, 0x00, 0x00, 0x00, /* left arrow */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* space */
+	0x00, 0x00, 0x00, 0x08, 0x08, 0x08, 0x08, 0x08, 0x00, 0x08, 0x00, 0x00, /* ! */
+	0x00, 0x00, 0x00, 0x14, 0x14, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* " */
+	0x00, 0x00, 0x00, 0x14, 0x14, 0x36, 0x00, 0x36, 0x14, 0x14, 0x00, 0x00, /* # */
+	0x00, 0x00, 0x00, 0x08, 0x1E, 0x20, 0x1C, 0x02, 0x3C, 0x08, 0x00, 0x00, /* $ */
+	0x00, 0x00, 0x00, 0x32, 0x32, 0x04, 0x08, 0x10, 0x26, 0x26, 0x00, 0x00, /* % */
+	0x00, 0x00, 0x00, 0x10, 0x28, 0x28, 0x10, 0x2A, 0x24, 0x1A, 0x00, 0x00, /* & */
+	0x00, 0x00, 0x00, 0x18, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* ' */
+	0x00, 0x00, 0x00, 0x08, 0x10, 0x20, 0x20, 0x20, 0x10, 0x08, 0x00, 0x00, /* ( */
+	0x00, 0x00, 0x00, 0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08, 0x00, 0x00, /* ) */
+	0x00, 0x00, 0x00, 0x00, 0x08, 0x1C, 0x3E, 0x1C, 0x08, 0x00, 0x00, 0x00, /* * */
+	0x00, 0x00, 0x00, 0x00, 0x08, 0x08, 0x3E, 0x08, 0x08, 0x00, 0x00, 0x00, /* + */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x30, 0x10, 0x20, 0x00, 0x00, /* , */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3E, 0x00, 0x00, 0x00, 0x00, 0x00, /* - */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x30, 0x00, 0x00, /* . */
+	0x00, 0x00, 0x00, 0x02, 0x02, 0x04, 0x08, 0x10, 0x20, 0x20, 0x00, 0x00, /* / */
+	0x00, 0x00, 0x00, 0x18, 0x24, 0x24, 0x24, 0x24, 0x24, 0x18, 0x00, 0x00, /* 0 */
+	0x00, 0x00, 0x00, 0x08, 0x18, 0x08, 0x08, 0x08, 0x08, 0x1C, 0x00, 0x00, /* 1 */
+	0x00, 0x00, 0x00, 0x1C, 0x22, 0x02, 0x1C, 0x20, 0x20, 0x3E, 0x00, 0x00, /* 2 */
+	0x00, 0x00, 0x00, 0x1C, 0x22, 0x02, 0x0C, 0x02, 0x22, 0x1C, 0x00, 0x00, /* 3 */
+	0x00, 0x00, 0x00, 0x04, 0x0C, 0x14, 0x3E, 0x04, 0x04, 0x04, 0x00, 0x00, /* 4 */
+	0x00, 0x00, 0x00, 0x3E, 0x20, 0x3C, 0x02, 0x02, 0x22, 0x1C, 0x00, 0x00, /* 5 */
+	0x00, 0x00, 0x00, 0x1C, 0x20, 0x20, 0x3C, 0x22, 0x22, 0x1C, 0x00, 0x00, /* 6 */
+	0x00, 0x00, 0x00, 0x3E, 0x02, 0x04, 0x08, 0x10, 0x20, 0x20, 0x00, 0x00, /* 7 */
+	0x00, 0x00, 0x00, 0x1C, 0x22, 0x22, 0x1C, 0x22, 0x22, 0x1C, 0x00, 0x00, /* 8 */
+	0x00, 0x00, 0x00, 0x1C, 0x22, 0x22, 0x1E, 0x02, 0x02, 0x1C, 0x00, 0x00, /* 9 */
+	0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00, /* : */
+	0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x18, 0x18, 0x08, 0x10, 0x00, 0x00, /* ; */
+	0x00, 0x00, 0x00, 0x04, 0x08, 0x10, 0x20, 0x10, 0x08, 0x04, 0x00, 0x00, /* < */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x3E, 0x00, 0x3E, 0x00, 0x00, 0x00, 0x00, /* = */
+	0x00, 0x00, 0x00, 0x10, 0x08, 0x04, 0x02, 0x04, 0x08, 0x10, 0x00, 0x00, /* > */
+	0x00, 0x00, 0x00, 0x18, 0x24, 0x04, 0x08, 0x08, 0x00, 0x08, 0x00, 0x00, /* ? */
 
-    for (i = 0; i < 7; i++)
-        rows[i] = 0x00;
+	/* Lower case */
+	0x00, 0x00, 0x00, 0x0C, 0x12, 0x10, 0x38, 0x10, 0x12, 0x3C, 0x00, 0x00, /* ^ */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x1C, 0x02, 0x1E, 0x22, 0x1E, 0x00, 0x00, /* a */
+	0x00, 0x00, 0x00, 0x20, 0x20, 0x3C, 0x22, 0x22, 0x22, 0x3C, 0x00, 0x00, /* b */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x1C, 0x20, 0x20, 0x20, 0x1C, 0x00, 0x00, /* c */
+	0x00, 0x00, 0x00, 0x02, 0x02, 0x1E, 0x22, 0x22, 0x22, 0x1E, 0x00, 0x00, /* d */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x1C, 0x22, 0x3E, 0x20, 0x1C, 0x00, 0x00, /* e */
+	0x00, 0x00, 0x00, 0x0C, 0x12, 0x10, 0x38, 0x10, 0x10, 0x10, 0x00, 0x00, /* f */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x1E, 0x22, 0x22, 0x22, 0x1E, 0x02, 0x1C, /* g */
+	0x00, 0x00, 0x00, 0x20, 0x20, 0x3C, 0x22, 0x22, 0x22, 0x22, 0x00, 0x00, /* h */
+	0x00, 0x00, 0x00, 0x08, 0x00, 0x18, 0x08, 0x08, 0x08, 0x1C, 0x00, 0x00, /* i */
+	0x00, 0x00, 0x00, 0x04, 0x00, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x24, 0x18, /* j */
+	0x00, 0x00, 0x00, 0x20, 0x20, 0x24, 0x28, 0x38, 0x24, 0x22, 0x00, 0x00, /* k */
+	0x00, 0x00, 0x00, 0x18, 0x08, 0x08, 0x08, 0x08, 0x08, 0x1C, 0x00, 0x00, /* l */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x3C, 0x2A, 0x2A, 0x2A, 0x2A, 0x00, 0x00, /* m */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x2C, 0x32, 0x22, 0x22, 0x22, 0x00, 0x00, /* n */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x1C, 0x22, 0x22, 0x22, 0x1C, 0x00, 0x00, /* o */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x3C, 0x22, 0x22, 0x22, 0x3C, 0x20, 0x20, /* p */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x1E, 0x22, 0x22, 0x22, 0x1E, 0x02, 0x03, /* q */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x2C, 0x32, 0x20, 0x20, 0x20, 0x00, 0x00, /* r */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x1E, 0x20, 0x1C, 0x02, 0x3C, 0x00, 0x00, /* s */
+	0x00, 0x00, 0x00, 0x10, 0x3C, 0x10, 0x10, 0x10, 0x12, 0x0C, 0x00, 0x00, /* t */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x22, 0x22, 0x26, 0x1A, 0x00, 0x00, /* u */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x22, 0x14, 0x14, 0x08, 0x00, 0x00, /* v */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x2A, 0x2A, 0x1C, 0x14, 0x00, 0x00, /* w */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x14, 0x08, 0x14, 0x22, 0x00, 0x00, /* x */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x22, 0x22, 0x22, 0x1E, 0x02, 0x1C, /* y */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x3E, 0x04, 0x08, 0x10, 0x3E, 0x00, 0x00, /* z */
+	0x00, 0x00, 0x00, 0x08, 0x10, 0x10, 0x20, 0x10, 0x10, 0x08, 0x00, 0x00, /* { */
+	0x00, 0x00, 0x00, 0x08, 0x08, 0x08, 0x00, 0x08, 0x08, 0x08, 0x00, 0x00, /* | */
+	0x00, 0x00, 0x00, 0x08, 0x04, 0x04, 0x02, 0x04, 0x04, 0x08, 0x00, 0x00, /* } */
+	0x00, 0x00, 0x00, 0x08, 0x08, 0x08, 0x08, 0x2A, 0x1C, 0x08, 0x00, 0x00, /* ~ */
+	0x00, 0x00, 0x00, 0x08, 0x04, 0x3E, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00  /* _ */
+};
 
-    if (c >= 'a' && c <= 'z')
-        c = (unsigned char)(c - 'a' + 'A');
 
-    switch (c) {
-        case 'A': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x1F; rows[4]=0x11; rows[5]=0x11; rows[6]=0x11; break;
-        case 'B': rows[0]=0x1E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x1E; rows[4]=0x11; rows[5]=0x11; rows[6]=0x1E; break;
-        case 'C': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x10; rows[3]=0x10; rows[4]=0x10; rows[5]=0x11; rows[6]=0x0E; break;
-        case 'D': rows[0]=0x1E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x11; rows[4]=0x11; rows[5]=0x11; rows[6]=0x1E; break;
-        case 'E': rows[0]=0x1F; rows[1]=0x10; rows[2]=0x10; rows[3]=0x1E; rows[4]=0x10; rows[5]=0x10; rows[6]=0x1F; break;
-        case 'F': rows[0]=0x1F; rows[1]=0x10; rows[2]=0x10; rows[3]=0x1E; rows[4]=0x10; rows[5]=0x10; rows[6]=0x10; break;
-        case 'G': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x10; rows[3]=0x17; rows[4]=0x11; rows[5]=0x11; rows[6]=0x0E; break;
-        case 'H': rows[0]=0x11; rows[1]=0x11; rows[2]=0x11; rows[3]=0x1F; rows[4]=0x11; rows[5]=0x11; rows[6]=0x11; break;
-        case 'I': rows[0]=0x0E; rows[1]=0x04; rows[2]=0x04; rows[3]=0x04; rows[4]=0x04; rows[5]=0x04; rows[6]=0x0E; break;
-        case 'J': rows[0]=0x01; rows[1]=0x01; rows[2]=0x01; rows[3]=0x01; rows[4]=0x11; rows[5]=0x11; rows[6]=0x0E; break;
-        case 'K': rows[0]=0x11; rows[1]=0x12; rows[2]=0x14; rows[3]=0x18; rows[4]=0x14; rows[5]=0x12; rows[6]=0x11; break;
-        case 'L': rows[0]=0x10; rows[1]=0x10; rows[2]=0x10; rows[3]=0x10; rows[4]=0x10; rows[5]=0x10; rows[6]=0x1F; break;
-        case 'M': rows[0]=0x11; rows[1]=0x1B; rows[2]=0x15; rows[3]=0x15; rows[4]=0x11; rows[5]=0x11; rows[6]=0x11; break;
-        case 'N': rows[0]=0x11; rows[1]=0x19; rows[2]=0x15; rows[3]=0x13; rows[4]=0x11; rows[5]=0x11; rows[6]=0x11; break;
-        case 'O': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x11; rows[4]=0x11; rows[5]=0x11; rows[6]=0x0E; break;
-        case 'P': rows[0]=0x1E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x1E; rows[4]=0x10; rows[5]=0x10; rows[6]=0x10; break;
-        case 'Q': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x11; rows[4]=0x15; rows[5]=0x12; rows[6]=0x0D; break;
-        case 'R': rows[0]=0x1E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x1E; rows[4]=0x14; rows[5]=0x12; rows[6]=0x11; break;
-        case 'S': rows[0]=0x0F; rows[1]=0x10; rows[2]=0x10; rows[3]=0x0E; rows[4]=0x01; rows[5]=0x01; rows[6]=0x1E; break;
-        case 'T': rows[0]=0x1F; rows[1]=0x04; rows[2]=0x04; rows[3]=0x04; rows[4]=0x04; rows[5]=0x04; rows[6]=0x04; break;
-        case 'U': rows[0]=0x11; rows[1]=0x11; rows[2]=0x11; rows[3]=0x11; rows[4]=0x11; rows[5]=0x11; rows[6]=0x0E; break;
-        case 'V': rows[0]=0x11; rows[1]=0x11; rows[2]=0x11; rows[3]=0x11; rows[4]=0x11; rows[5]=0x0A; rows[6]=0x04; break;
-        case 'W': rows[0]=0x11; rows[1]=0x11; rows[2]=0x11; rows[3]=0x15; rows[4]=0x15; rows[5]=0x15; rows[6]=0x0A; break;
-        case 'X': rows[0]=0x11; rows[1]=0x11; rows[2]=0x0A; rows[3]=0x04; rows[4]=0x0A; rows[5]=0x11; rows[6]=0x11; break;
-        case 'Y': rows[0]=0x11; rows[1]=0x11; rows[2]=0x0A; rows[3]=0x04; rows[4]=0x04; rows[5]=0x04; rows[6]=0x04; break;
-        case 'Z': rows[0]=0x1F; rows[1]=0x01; rows[2]=0x02; rows[3]=0x04; rows[4]=0x08; rows[5]=0x10; rows[6]=0x1F; break;
-        case '0': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x13; rows[3]=0x15; rows[4]=0x19; rows[5]=0x11; rows[6]=0x0E; break;
-        case '1': rows[0]=0x04; rows[1]=0x0C; rows[2]=0x04; rows[3]=0x04; rows[4]=0x04; rows[5]=0x04; rows[6]=0x0E; break;
-        case '2': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x01; rows[3]=0x02; rows[4]=0x04; rows[5]=0x08; rows[6]=0x1F; break;
-        case '3': rows[0]=0x1E; rows[1]=0x01; rows[2]=0x01; rows[3]=0x0E; rows[4]=0x01; rows[5]=0x01; rows[6]=0x1E; break;
-        case '4': rows[0]=0x02; rows[1]=0x06; rows[2]=0x0A; rows[3]=0x12; rows[4]=0x1F; rows[5]=0x02; rows[6]=0x02; break;
-        case '5': rows[0]=0x1F; rows[1]=0x10; rows[2]=0x10; rows[3]=0x1E; rows[4]=0x01; rows[5]=0x01; rows[6]=0x1E; break;
-        case '6': rows[0]=0x0E; rows[1]=0x10; rows[2]=0x10; rows[3]=0x1E; rows[4]=0x11; rows[5]=0x11; rows[6]=0x0E; break;
-        case '7': rows[0]=0x1F; rows[1]=0x01; rows[2]=0x02; rows[3]=0x04; rows[4]=0x08; rows[5]=0x08; rows[6]=0x08; break;
-        case '8': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x0E; rows[4]=0x11; rows[5]=0x11; rows[6]=0x0E; break;
-        case '9': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x0F; rows[4]=0x01; rows[5]=0x01; rows[6]=0x0E; break;
-        case '>': rows[0]=0x10; rows[1]=0x08; rows[2]=0x04; rows[3]=0x02; rows[4]=0x04; rows[5]=0x08; rows[6]=0x10; break;
-        case '<': rows[0]=0x01; rows[1]=0x02; rows[2]=0x04; rows[3]=0x08; rows[4]=0x04; rows[5]=0x02; rows[6]=0x01; break;
-        case '-': rows[3]=0x1F; break;
-        case '_': rows[6]=0x1F; break;
-        case '.': rows[6]=0x04; break;
-        case ',': rows[5]=0x04; rows[6]=0x08; break;
-        case ':': rows[1]=0x04; rows[5]=0x04; break;
-        case ';': rows[1]=0x04; rows[5]=0x04; rows[6]=0x08; break;
-        case '(': rows[0]=0x02; rows[1]=0x04; rows[2]=0x08; rows[3]=0x08; rows[4]=0x08; rows[5]=0x04; rows[6]=0x02; break;
-        case ')': rows[0]=0x08; rows[1]=0x04; rows[2]=0x02; rows[3]=0x02; rows[4]=0x02; rows[5]=0x04; rows[6]=0x08; break;
-        case ' ': break;
-        default:
-            rows[0]=0x1F; rows[1]=0x11; rows[2]=0x01; rows[3]=0x06; rows[4]=0x04; rows[5]=0x00; rows[6]=0x04;
-            break;
-    }
+static int X720_FontIndex(unsigned char c, int *inverse)
+{
+    unsigned char cc = (unsigned char)(c & 0x7F);
+
+    if (inverse)
+        *inverse = (c & 0x80) ? 1 : 0;
+
+    /*
+     * Le MC6847 standard masque les caracteres sur 6 bits.
+     * Cela donne bien :
+     *   0x40 '@' -> index 0
+     *   0x41 'A' -> index 1
+     *   0x20 ' ' -> index 32
+     *   0x30 '0' -> index 48
+     *
+     * Pour les codes ASCII minuscules 0x60-0x7F, on utilise la partie
+     * basse de la table MAME afin de faciliter les tests modernes.
+     */
+    if (cc >= 0x60 && cc <= 0x7F)
+        return 64 + (cc - 0x60);
+
+    return cc & 0x3F;
 }
 
 static void X720_DrawGlyph(int x, int y, unsigned char c)
 {
-    byte rows[7];
     int gy, gx;
-    const int scale = 2;
+    int inverse = 0;
+    int idx = X720_FontIndex(c, &inverse);
+    const byte *glyph = &X720_MC6847_FONT_8X12[idx * 12];
 
-    if (c < 32 || c > 126)
-        return;
+    int px_w = X720_TEXT_CELL_W / 8;
+    int px_h = X720_TEXT_CELL_H / 12;
 
-    X720_GetGlyphRows(c, rows);
+    if (px_w < 1) px_w = 1;
+    if (px_h < 1) px_h = 1;
 
     SDL_SetRenderDrawColor(x720_renderer, 0, 255, 0, 255);
 
-    for (gy = 0; gy < 7; gy++) {
-        for (gx = 0; gx < 5; gx++) {
-            if (rows[gy] & (1 << (4 - gx))) {
+    for (gy = 0; gy < 12; gy++) {
+        byte row = glyph[gy];
+
+        /*
+         * La fonte MC6847 stocke des formes sur 6 bits utiles.
+         * On les centre dans une cellule de 8 pixels.
+         */
+        for (gx = 0; gx < 8; gx++) {
+            int bit;
+
+            if (gx == 0 || gx == 7)
+                bit = 0;
+            else
+                bit = (row & (1 << (6 - gx))) ? 1 : 0;  /* gx 1..6 -> bits 5..0 */
+
+            if (inverse)
+                bit = !bit;
+
+            if (bit) {
                 SDL_Rect r;
-                r.x = x + gx * scale;
-                r.y = y + gy * scale;
-                r.w = scale;
-                r.h = scale;
+                r.x = x + gx * px_w;
+                r.y = y + gy * px_h;
+                r.w = px_w;
+                r.h = px_h;
                 SDL_RenderFillRect(x720_renderer, &r);
             }
         }
@@ -273,25 +534,25 @@ static void X720_DrawTextPanel(word base, int *active_count)
     /* Fond uniforme. */
     SDL_SetRenderDrawColor(x720_renderer, 0, 0, 0, 255);
     {
-        SDL_Rect bg = { X720_MARGIN_X, X720_MARGIN_Y, X720_PANEL_W, 16 * X720_CELL_H };
+        SDL_Rect bg = { X720_MARGIN_X, X720_MARGIN_Y, X720_TEXT_PANEL_W, X720_TEXT_PANEL_H };
         SDL_RenderFillRect(x720_renderer, &bg);
     }
 
     for (y = 0; y < 16; y++) {
         for (x = 0; x < 32; x++) {
             byte v = X720_ReadPlaneByte(base, x, y);
-            if (v >= 32 && v <= 126 && v != 0x20) {
+            if (((v & 0x7F) != 0x20) || (v & 0x80)) {
                 if (active_count)
                     (*active_count)++;
-                X720_DrawGlyph(X720_MARGIN_X + x * X720_CELL_W + 4,
-                               X720_MARGIN_Y + y * X720_CELL_H + 1,
+                X720_DrawGlyph(X720_MARGIN_X + x * X720_TEXT_CELL_W,
+                               X720_MARGIN_Y + y * X720_TEXT_CELL_H,
                                (unsigned char)v);
             }
         }
     }
 
     {
-        SDL_Rect border = { X720_MARGIN_X - 1, X720_MARGIN_Y - 1, X720_PANEL_W + 1, 16 * X720_CELL_H + 1 };
+        SDL_Rect border = { X720_MARGIN_X - 1, X720_MARGIN_Y - 1, X720_TEXT_PANEL_W + 1, X720_TEXT_PANEL_H + 1 };
         SDL_SetRenderDrawColor(x720_renderer, 120, 120, 120, 255);
         SDL_RenderDrawRect(x720_renderer, &border);
     }
@@ -328,6 +589,171 @@ static void X720_DrawZoomPanel(word base, int *active_count)
         SDL_SetRenderDrawColor(x720_renderer, 150, 150, 150, 255);
         SDL_RenderDrawRect(x720_renderer, &border);
     }
+}
+
+
+
+static void X720_SetLogicalPixelColor(byte color)
+{
+    static const unsigned char pal[9][3] = {
+        {  0,   0,   0},  /* 0 : fond */
+        {  0, 220,   0},  /* 1 : vert */
+        {255, 230,   0},  /* 2 : jaune */
+        {  0, 120, 255},  /* 3 : bleu */
+        {255,  70,  40},  /* 4 : rouge */
+        {230, 210, 160},  /* 5 : buff */
+        {  0, 220, 220},  /* 6 : cyan */
+        {255,  70, 255},  /* 7 : magenta */
+        {255, 150,   0}   /* 8 : orange */
+    };
+
+    if (color > 8)
+        color = 8;
+
+    SDL_SetRenderDrawColor(x720_renderer, pal[color][0], pal[color][1], pal[color][2], 255);
+}
+
+static void X720_DrawLogicalPixels(int *active_count)
+{
+    int x, y;
+    SDL_Rect r;
+
+    if (active_count)
+        *active_count = x720_pixels_active;
+
+    SDL_SetRenderDrawColor(x720_renderer, 0, 0, 0, 255);
+    r.x = X720_MARGIN_X;
+    r.y = X720_MARGIN_Y;
+    r.w = X720_GFX_W * X720_GFX_SCALE;
+    r.h = X720_GFX_H * X720_GFX_SCALE;
+    SDL_RenderFillRect(x720_renderer, &r);
+
+    for (y = 0; y < X720_GFX_H; y++) {
+        for (x = 0; x < X720_GFX_W; x++) {
+            byte color = x720_pixels[y][x];
+            if (color == 0x00)
+                continue;
+
+            X720_SetLogicalPixelColor(color);
+            r.x = X720_MARGIN_X + x * X720_GFX_SCALE;
+            r.y = X720_MARGIN_Y + y * X720_GFX_SCALE;
+            r.w = X720_GFX_SCALE;
+            r.h = X720_GFX_SCALE;
+            SDL_RenderFillRect(x720_renderer, &r);
+        }
+    }
+
+    r.x = X720_MARGIN_X - 1;
+    r.y = X720_MARGIN_Y - 1;
+    r.w = X720_GFX_W * X720_GFX_SCALE + 1;
+    r.h = X720_GFX_H * X720_GFX_SCALE + 1;
+    SDL_SetRenderDrawColor(x720_renderer, 150, 150, 150, 255);
+    SDL_RenderDrawRect(x720_renderer, &r);
+}
+
+static void X720_SetMC6847PaletteColor(int idx)
+{
+    /* Palette simplifiee inspiree MC6847 : vert, jaune, bleu, rouge, buff, cyan, magenta, orange, noir. */
+    static const unsigned char pal[9][3] = {
+        {  0, 210,   0},  /* vert */
+        {255, 230,   0},  /* jaune */
+        {  0, 110, 255},  /* bleu */
+        {255,  60,  40},  /* rouge */
+        {230, 210, 160},  /* buff */
+        {  0, 220, 220},  /* cyan */
+        {255,  70, 255},  /* magenta */
+        {255, 150,   0},  /* orange */
+        {  0,   0,   0}   /* noir */
+    };
+
+    if (idx < 0 || idx > 8)
+        idx = 8;
+
+    SDL_SetRenderDrawColor(x720_renderer, pal[idx][0], pal[idx][1], pal[idx][2], 255);
+}
+
+static int X720_GraphicsBitsPerPixel(byte ctrl)
+{
+    int gm = (ctrl >> 2) & 7;
+
+    /*
+     * Premiere approximation : la plupart des modes MC6847 haute resolution
+     * utilises par le X-720 se decodent correctement en 1 bit/pixel.
+     * Les modes impairs sont testes en 2 bits/pixel pour l'experimentation.
+     */
+    return (gm & 1) ? 2 : 1;
+}
+
+static void X720_DrawMC6847Graphics(word base, byte ctrl, int *active_count)
+{
+    int y, bx, bit;
+    int scale = 4;
+    int bpp = X720_GraphicsBitsPerPixel(ctrl);
+    int bytes_per_row = (bpp == 1) ? 32 : 64;
+    int pixels_per_byte = 8 / bpp;
+    int color_base = (ctrl & 0x03) ? 4 : 0;
+    SDL_Rect r;
+
+    if (active_count)
+        *active_count = 0;
+
+    SDL_SetRenderDrawColor(x720_renderer, 0, 0, 0, 255);
+    r.x = X720_MARGIN_X;
+    r.y = X720_MARGIN_Y;
+    r.w = 256 * scale;
+    r.h = 192 * scale;
+    SDL_RenderFillRect(x720_renderer, &r);
+
+    for (y = 0; y < 192; y++) {
+        for (bx = 0; bx < bytes_per_row; bx++) {
+            word off = base + (word)y * bytes_per_row + bx;
+            byte v;
+
+            if (off >= X720_VRAM_SIZE)
+                continue;
+
+            v = X720_ReadByte(off);
+
+            for (bit = 0; bit < pixels_per_byte; bit++) {
+                int shift = 8 - (bit + 1) * bpp;
+                int mask = (1 << bpp) - 1;
+                int col = (v >> shift) & mask;
+
+                if (col == 0)
+                    continue;
+
+                if (active_count)
+                    (*active_count)++;
+
+                X720_SetMC6847PaletteColor(color_base + col);
+                r.x = X720_MARGIN_X + (bx * pixels_per_byte + bit) * scale;
+                r.y = X720_MARGIN_Y + y * scale;
+                r.w = scale;
+                r.h = scale;
+                SDL_RenderFillRect(x720_renderer, &r);
+            }
+        }
+    }
+
+    r.x = X720_MARGIN_X - 1;
+    r.y = X720_MARGIN_Y - 1;
+    r.w = 256 * scale + 1;
+    r.h = 192 * scale + 1;
+    SDL_SetRenderDrawColor(x720_renderer, 150, 150, 150, 255);
+    SDL_RenderDrawRect(x720_renderer, &r);
+}
+
+static word X720_DrawAutoMC6847(int *active_count)
+{
+    byte ctrl = X720_GetCtrl();
+    word base = X720_AutoPlaneBase(ctrl);
+
+    if (X720_AutoIsGraphics(ctrl))
+        X720_DrawLogicalPixels(active_count);
+    else
+        X720_DrawTextPanel(base, active_count);
+
+    return base;
 }
 
 void X720_Video_SelfTest(void)
@@ -403,13 +829,14 @@ int X720_Video_Init(void)
     x720_ready = 1;
     x720_dirty = 1;
     x720_last_update_ms = 0;
+    X720_GfxClear(0);
 
     X720_SetWindowTitle();
     X720_Video_SelfTest();
     X720_Video_Update();
 
-    fprintf(stderr, "[X720 VIDEO] Fenetre TV x2 initialisee (%dx%d), vue zoom %s\n",
-            X720_WIN_W, X720_WIN_H, x720_plane_name[x720_view_plane]);
+    fprintf(stderr, "[X720 VIDEO] Fenetre TV x2 initialisee (%dx%d), vue %s mode %s\n",
+            X720_WIN_W, X720_WIN_H, x720_plane_name[x720_view_plane], X720_RenderModeName());
     return 1;
 #else
     return 0;
@@ -473,17 +900,17 @@ void X720_Video_Update(void)
     SDL_SetRenderDrawColor(x720_renderer, 0, 0, 0, 255);
     SDL_RenderClear(x720_renderer);
 
-    if (x720_color_mode == 2)
+    if (x720_color_mode == 2) {
         X720_DrawTextPanel(base, &active);
-    else
+    } else if (x720_color_mode == 3) {
+        base = X720_DrawAutoMC6847(&active);
+    } else if (x720_color_mode == 4) {
+        X720_DrawLogicalPixels(&active);
+    } else {
         X720_DrawZoomPanel(base, &active);
-
-    /* LED verte : prouve que la fonction update tourne. */
-    {
-        SDL_Rect led = { 4, 4, 8, 8 };
-        SDL_SetRenderDrawColor(x720_renderer, 0, 255, 0, 255);
-        SDL_RenderFillRect(x720_renderer, &led);
     }
+
+    /* Pas de LED de debug dans la fenêtre TV. */
 
     /* Cadre global rouge. */
     {
@@ -492,16 +919,19 @@ void X720_Video_Update(void)
         SDL_RenderDrawRect(x720_renderer, &border);
     }
 
+    X720_SetWindowTitle();
     SDL_RenderPresent(x720_renderer);
     x720_dirty = 0;
 
     if (x720_update_count <= 20 || (x720_update_count % 60) == 0) {
         fprintf(stderr,
-                "[X720 VIDEO] Update #%lu view=%s mode=%s active=%d "
+                "[X720 VIDEO] Update #%lu view=%s mode=%s rendu=%04X kind=%s active=%d "
                 "8000=%02X 8001=%02X 8400=%02X 8401=%02X 8580=%02X 9000=%02X 9001=%02X 9020=%02X 9400=%02X 9401=%02X\n",
                 x720_update_count,
                 x720_plane_name[x720_view_plane],
-                (x720_color_mode == 0) ? "valeurs" : ((x720_color_mode == 1) ? "actif" : "texte"),
+                X720_RenderModeName(),
+                0x8000 + base,
+                (x720_color_mode == 3) ? X720_AutoKindName(X720_GetCtrl()) : "manuel",
                 active,
                 X720_ReadByte(X720_PLANE_8000 + 0x0000),
                 X720_ReadByte(X720_PLANE_8000 + 0x0001),
@@ -544,40 +974,95 @@ int X720_Video_HandleEvent(const void *event_ptr)
     if (!x720_ready || x720_window_id == 0)
         return 0;
 
-    if (event->type == SDL_WINDOWEVENT &&
-        event->window.windowID == x720_window_id) {
+    /*
+     * Evenements de la fenetre X-720.
+     * Si l'evenement appartient a cette fenetre, il ne doit pas etre
+     * retransmis au clavier du Canon X-07.
+     */
+    if (event->type == SDL_WINDOWEVENT) {
+        if (event->window.windowID != x720_window_id)
+            return 0;
+
         if (event->window.event == SDL_WINDOWEVENT_CLOSE)
             X720_Video_SetEnabled(0);
+
         return 1;
     }
 
-    if (event->type == SDL_KEYDOWN &&
-        event->key.windowID == x720_window_id) {
-        SDL_Keycode k = event->key.keysym.sym;
-
-        if (k == SDLK_0) {
-            x720_view_plane = 0;
-        } else if (k == SDLK_1) {
-            x720_view_plane = 1;
-        } else if (k == SDLK_2) {
-            x720_view_plane = 2;
-        } else if (k == SDLK_3) {
-            x720_view_plane = 3;
-        } else if (k == SDLK_TAB) {
-            x720_view_plane = (x720_view_plane + 1) % 4;
-        } else if (k == SDLK_v) {
-            x720_color_mode = (x720_color_mode + 1) % 3;
-        } else if (k == SDLK_t) {
-            x720_color_mode = 2;
-        } else {
+    /*
+     * SDL envoie parfois un SDL_TEXTINPUT apres un SDL_KEYDOWN.
+     * Pour eviter qu'un 0/1/2/3 utilise dans la fenetre TV apparaisse
+     * aussi sur le LCD X-07, on consomme aussi le TEXTINPUT de cette fenetre.
+     */
+    if (event->type == SDL_TEXTINPUT) {
+        if (event->text.windowID == x720_window_id)
             return 1;
+        return 0;
+    }
+
+    /* KEYUP de la fenetre TV : consomme pour ne pas toucher TestChr_KeyDown. */
+    if (event->type == SDL_KEYUP) {
+        if (event->key.windowID == x720_window_id)
+            return 1;
+        return 0;
+    }
+
+    if (event->type == SDL_KEYDOWN) {
+        SDL_Keycode k;
+
+        if (event->key.windowID != x720_window_id)
+            return 0;
+
+        k = event->key.keysym.sym;
+
+        switch (k) {
+            case SDLK_0:
+                x720_view_plane = 0;
+                break;
+
+            case SDLK_1:
+                x720_view_plane = 1;
+                break;
+
+            case SDLK_2:
+                x720_view_plane = 2;
+                break;
+
+            case SDLK_3:
+                x720_view_plane = 3;
+                break;
+
+            case SDLK_TAB:
+                x720_view_plane = (x720_view_plane + 1) % 4;
+                break;
+
+            case SDLK_v:
+                x720_color_mode = (x720_color_mode + 1) % 5;
+                break;
+
+            case SDLK_t:
+                x720_color_mode = 2;
+                break;
+
+            case SDLK_a:
+                x720_color_mode = 3;
+                break;
+
+            case SDLK_g:
+                x720_color_mode = 4;
+                break;
+
+            default:
+                /* Touche inconnue, mais elle appartient a la fenetre TV :
+                 * on la consomme quand meme pour ne pas polluer le LCD. */
+                return 1;
         }
 
         X720_SetWindowTitle();
         X720_Video_MarkDirty();
         fprintf(stderr, "[X720 VIDEO] Vue=%s mode=%s\n",
                 x720_plane_name[x720_view_plane],
-                (x720_color_mode == 0) ? "valeurs" : ((x720_color_mode == 1) ? "actif" : "texte"));
+                X720_RenderModeName());
         return 1;
     }
 

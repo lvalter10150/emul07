@@ -88,6 +88,8 @@ static Uint32 BasicText_StartMs = 0;
 static Uint32 BasicText_NextMs = 0;
 static unsigned long BasicText_Count = 0;
 
+int X720_Video_HandleEvent(const void *event);
+
 /*
  * Mode majuscule interne a l'emulateur.
  * 1 = le clavier PC fonctionne comme le Canon X-07 en majuscules.
@@ -325,8 +327,10 @@ int Voir_Xevent()
 	static int Ignore_TextInput_Count = 0;
 	
 	while (SDL_PollEvent(&event)) {
-		/* La fenetre TV X-720 est separee : ses evenements ne doivent pas
-		 * fermer l'emulateur principal. */
+		/*
+		 * La fenetre TV X-720 consomme ses propres evenements SDL.
+		 * Si elle retourne 1, on ne transmet pas la touche au clavier X-07.
+		 */
 		if (X720_Video_HandleEvent(&event))
 			continue;
 

@@ -84,18 +84,37 @@ void TestChr_Clear(byte chr);
 void X07_LCD_Off(void);
 void X07_LCD_On(void);
 
-/* Video X-720.c */
-/*---------------*/
+/*
+ * video_x720.c
+ */
 int  X720_Video_Init(void);
 void X720_Video_Close(void);
 void X720_Video_SetEnabled(int enabled);
 void X720_Video_MarkDirty(void);
+int  X720_Video_IsReady(void);
 void X720_Video_Update(void);
 void X720_Video_Service(void);
-int  X720_Video_HandleEvent(const void *event);
 void X720_Video_DebugDump(void);
-void X720_Video_SelfTest(void);
 
+/*
+ * Rendu graphique logique X-720
+ */
+void X720_GfxClear(byte color);
+void X720_GfxSetPixel(int x, int y, byte color);
+void X720_GfxWriteFromRom(word logical_addr,
+                          word phys_addr,
+                          byte old_value,
+                          byte new_value,
+                          int x,
+                          int y,
+                          byte fg,
+                          byte bg,
+                          byte ctrl);
+
+/*
+ * Etat X-720 exposé par x07.c
+ */
+byte X720_GetCtrl(void);
 /* Sound.c */
 /*---------*/
 void Sound_Init(void);
