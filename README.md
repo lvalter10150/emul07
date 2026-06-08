@@ -82,7 +82,7 @@ Les éléments suivants sont partiellement ou totalement pris en charge :
 - seconde fenêtre SDL expérimentale pour le module TV X-720 ;
 - intégration de la ROM X-720 / ROM TV en `A000h-AFFFh` ;
 - VRAM X-720 séparée en `8000h-97FFh` ;
-- premiers modes de rendu X-720 : visualisation mémoire, rendu texte ASCII simple et affichage par plans ;
+- premiers modes de rendu X-720 : visualisation mémoire, rendu texte ASCII simple, affichage par plans et premiers rendus graphiques de debug ;
 - gestion du clavier PC vers clavier Canon X-07 ;
 - touches spéciales `ON/BREAK`, `OFF`, `RESET` ;
 - sauvegarde temporaire de la RAM lors de l’extinction ;
@@ -239,7 +239,9 @@ RUN
 
 Le projet commence à intégrer le module TV **Canon X-720**.
 
-Cette partie est encore expérimentale, mais plusieurs éléments importants fonctionnent déjà :
+Cette partie est encore expérimentale, mais l’intégration de la ROM TV avance maintenant assez pour exécuter des commandes BASIC comme `SCREEN`, `POKE` et `PSET` en passant par les routines de la ROM X-720.
+
+Les éléments suivants sont déjà en place :
 
 - chargement de la ROM X-720 / ROM TV ;
 - mappage de la ROM TV en `A000h-AFFFh` ;
@@ -249,7 +251,9 @@ Cette partie est encore expérimentale, mais plusieurs éléments importants fon
 - séparation de l’affichage LCD X-07 et de l’affichage TV X-720 ;
 - création d’une seconde fenêtre SDL dédiée à la TV ;
 - premiers rendus de debug par plans mémoire ;
-- rendu texte ASCII simple pour valider les écritures en VRAM.
+- rendu texte ASCII simple pour valider les écritures en VRAM ;
+- début du rendu graphique X-720 à partir des écritures produites par la ROM TV ;
+- validation de tests horizontaux et verticaux pour comprendre l’organisation de la VRAM graphique.
 
 L’architecture actuellement utilisée est la suivante :
 
@@ -343,11 +347,17 @@ offset = 0x0400 + y * 32 + x;   /* plan physique 8400h */
 caractere = X720_VRAM[offset];
 ```
 
-### Premières observations graphiques
+### Intégration ROM TV et rendu graphique
 
-Le mode `SCREEN 3` est également en cours d’analyse. Les traces ont montré que certaines écritures graphiques passent par la routine ROM autour de `A72Eh`.
+Le mode `SCREEN 3` est également en cours d’analyse. Les traces ont montré que certaines écritures graphiques passent par les routines de la ROM TV, notamment autour de `A72Eh` pour les opérations de type `PSET`.
 
-Des tests avec `PSET` ont permis de comprendre un premier découpage en blocs :
+L’objectif actuel n’est pas encore de reproduire parfaitement le signal vidéo réel, mais de vérifier que les appels BASIC passent bien par la ROM X-720 et que les écritures obtenues en VRAM peuvent être interprétées correctement par la fenêtre SDL TV.
+
+Les tests récents ont permis de valider deux directions importantes.
+
+#### Test horizontal
+
+Le test horizontal confirme le découpage par blocs de 8 pixels sur l’axe X :
 
 ```text
 X=0..7     -> même octet VRAM
@@ -356,7 +366,11 @@ X=16..23   -> octet suivant
 X=24..31   -> octet suivant
 ```
 
-Et verticalement :
+Autrement dit, quand on avance horizontalement, l’adresse VRAM progresse par octet tous les 8 pixels.
+
+#### Test vertical
+
+Le test vertical confirme un découpage par blocs de 12 pixels sur l’axe Y :
 
 ```text
 Y=0..11    -> même rangée de blocs
@@ -365,13 +379,35 @@ Y=24..35   -> rangée suivante
 Y=36..47   -> rangée suivante
 ```
 
-La formule provisoire observée pour certains tests graphiques est :
+Chaque rangée graphique avance actuellement de `0x20` octets dans le plan observé.
+
+La formule provisoire utilisée pour visualiser certains tests graphiques reste donc :
 
 ```c
 addr = 0x9000 + (y / 12) * 0x20 + (x / 8);
 ```
 
-Cette partie reste expérimentale : elle sert pour l’instant à comprendre le codage de la VRAM et le comportement du contrôleur vidéo.
+Cette formule n’est pas encore considérée comme définitive. Elle sert pour l’instant de modèle de rendu expérimental pour visualiser les écritures de la ROM TV et comparer le résultat avec les tests BASIC.
+
+#### Chemin validé pour `PSET`
+
+Les tests graphiques valident maintenant le chemin suivant :
+
+```text
+BASIC PSET(x,y)
+        ↓
+routine ROM TV X-720
+        ↓
+écritures VRAM X-720
+        ↓
+X720_VRAM[]
+        ↓
+video_x720.c
+        ↓
+fenêtre SDL TV X-720
+```
+
+Le rendu obtenu permet de distinguer les variations horizontales et verticales, ce qui confirme que l’émulateur commence à suivre le comportement réel du module TV, même si le codage exact des plans et des bits reste encore à affiner.
 
 ### Touches de debug de la fenêtre TV
 
@@ -388,6 +424,8 @@ La fenêtre TV X-720 dispose de quelques touches de debug selon la version de `v
 | `T` | Passer en rendu texte |
 
 Ces touches sont principalement destinées au debug de la VRAM X-720. Elles pourront évoluer au fur et à mesure de l’émulation réelle du contrôleur vidéo.
+
+Les tests actuels utilisent aussi les traces mémoire pour suivre les écritures autour des plans `8400h`, `9000h` et `9400h`, afin de différencier le texte, les plans graphiques et les zones réellement actives selon le mode sélectionné.
 
 ---
 
@@ -593,6 +631,7 @@ Les points encore en cours ou à améliorer peuvent inclure :
 - amélioration du son cassette ;
 - support complet des périphériques ;
 - amélioration du rendu TV X-720 et émulation plus fidèle du contrôleur vidéo ;
+- décodage complet des plans graphiques X-720 et du placement des bits dans chaque octet VRAM ;
 - bascule automatique propre entre les modes X-720 `SCREEN 1` et `SCREEN 3` ;
 - amélioration du chargement et de la sauvegarde cassette ;
 - compatibilité avec davantage de programmes BASIC.
